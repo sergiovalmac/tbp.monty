@@ -120,11 +120,13 @@ class MuJoCoSimulator(Simulator):
 
     def _recompile(self) -> None:
         """Recompile the MuJoCo model while retaining any state data."""
-        self.spec.option.gravity = (0.0, 0.0, 0.0)  # TODO: check if necessary.
-        g = self.spec.visual.global_
-        g.offwidth, g.offheight = self._max_sensor_resolution()
+        # spec.option and spec.visual broken in mujoco 3.2.x — set on compiled model
         self.model, self.data = self.spec.recompile(self.model, self.data)
+        self.model.opt.gravity[:] = [0.0, 0.0, 0.0]
         mj_forward(self.model, self.data)
+        w, h = self._max_sensor_resolution()
+        self.model.vis.global_.offwidth = w
+        self.model.vis.global_.offheight = h
 
     def remove_all_objects(self) -> None:
         self.spec = MjSpec()

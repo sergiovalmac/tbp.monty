@@ -69,7 +69,7 @@ class LivePlotter:
         ]["rgba"]
         if hasattr(first_learning_module, "get_current_mlh"):
             mlh = first_learning_module.get_current_mlh()
-            if mlh["graph_id"] == "no_observations_yet":
+            if mlh["graph_id"] == "no_observations_yet" or mlh["graph_id"].startswith("new_object"):
                 mlh_model = None
             else:
                 mlh_model = first_learning_module.graph_memory.get_graph(
@@ -150,7 +150,7 @@ class LivePlotter:
             self.ax[0].add_patch(square)
         if hasattr(first_learning_module, "get_current_mlh"):
             mlh = first_learning_module.get_current_mlh()
-            if mlh and mlh["graph_id"] != "no_observations_yet":
+            if mlh and mlh["graph_id"] != "no_observations_yet" and not mlh["graph_id"].startswith("new_object"):
                 graph_ids, evidences = (
                     first_learning_module.get_evidence_for_each_graph()
                 )

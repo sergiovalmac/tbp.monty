@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Protocol, Tuple, TypedDict, cast
 
 import numpy as np
 import quaternion as qt
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # TODO: Move elsewhere
-Size = tuple[int, int]
+Size = Tuple[int, int]
 
 # The default field of view value for zoom 1.0
 # Note: this value is the half-FOV rather than the full FOV
