@@ -331,6 +331,12 @@ class RobotSurfaceAgent(AgentBase):
         position: VectorXYZ = (0.0, 0.0, 0.0),
         rotation: QuaternionWXYZ = (1.0, 0.0, 0.0, 0.0),
     ):
+        # Load the robot MJCF into the spec before the base class adds the
+        # agent body.  ``spec.from_file`` replaces the spec contents, so this
+        # must happen first; then ``super().__init__`` appends the camera body
+        # on top of the robot.
+        self._load_robot_into_spec(simulator, robot_name)
+
         super().__init__(simulator, agent_id, sensor_configs, position, rotation)
         self._robot_name = robot_name
         self._ee_site_name = ee_site_name
@@ -348,6 +354,38 @@ class RobotSurfaceAgent(AgentBase):
         self._robot_joint_ids: list[int] = []
         self._robot_dof_ids: list[int] = []
         self._robot_qpos_addrs: list[int] = []
+
+    @staticmethod
+    def _load_robot_into_spec(simulator: MuJoCoSimulator, robot_name: str) -> None:
+        """Load a robot MJCF into the simulator's spec.
+
+        This uses ``spec.from_file`` which replaces the spec contents, so it
+        must be called before any other bodies (agents, objects) are added.
+
+        Args:
+            simulator: The simulator whose spec will be populated.
+            robot_name: Robot identifier, e.g. ``"robot:ur5e"``.
+        """
+        import importlib
+
+        prefix = "robot:"
+        bare_name = robot_name[len(prefix):] if robot_name.startswith(prefix) else robot_name
+        module_name = f"robot_descriptions.{bare_name}_mj_description"
+        try:
+            mod = importlib.import_module(module_name)
+        except ModuleNotFoundError as e:
+            raise ValueError(
+                f"Robot description not found for {bare_name!r}. "
+                f"Expected module {module_name} from the robot_descriptions "
+                f"package."
+            ) from e
+
+        simulator.spec.from_file(str(mod.MJCF_PATH))
+
+        # Remove keyframes — their qpos sizes are for the original model and
+        # become invalid once additional bodies (e.g. agents) are added.
+        for key in list(simulator.spec.key):
+            key.delete()
 
     # ------------------------------------------------------------------
     # Lazy robot discovery

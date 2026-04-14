@@ -33,7 +33,6 @@ from tbp.monty.frameworks.models.motor_system_state import (
 )
 from tbp.monty.math import QuaternionWXYZ, VectorXYZ
 from tbp.monty.simulators.mujoco import Agent, AgentConfig, Size
-from tbp.monty.simulators.mujoco.agents import RobotSurfaceAgent
 from tbp.monty.simulators.mujoco.object_builders import (
     YCBObjectBuilder,
     MJCFObjectBuilder,
@@ -127,25 +126,9 @@ class MuJoCoSimulator(Simulator):
 
     def remove_all_objects(self) -> None:
         self.spec = MjSpec()
-
-        # If any agent requires a robot arm, reload it before agents are
-        # created so that the robot bodies exist in the spec.
-        robot_name = self._get_required_robot_name()
-        if robot_name:
-            self._robot_builder.add_to_spec(
-                self.spec, 0, (0, 0, 0), (1, 0, 0, 0), (1, 1, 1), robot_name
-            )
-
         self._create_agents()
         self._recompile()
         self._object_count = 0
-
-    def _get_required_robot_name(self) -> str | None:
-        """Return the robot name required by any RobotSurfaceAgent, or None."""
-        for cfg in self._agent_configs:
-            if issubclass(cfg["agent_type"], RobotSurfaceAgent):
-                return cfg["agent_args"].get("robot_name", "robot:ur5e")
-        return None
 
     @override
     def add_object(

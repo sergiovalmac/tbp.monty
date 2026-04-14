@@ -175,10 +175,13 @@ config:
       use_semantic_sensor: false
   train_env_interface_class: ${monty.class:tbp.monty.frameworks.environments.embodied_data.InformedEnvironmentInterface}
   train_env_interface_args:
+    good_view_distance: 0.12
+    good_view_percentage: 0.2
     object_names:
-      - 025_mug
+      - sphere
     object_init_sampler:
       _target_: tbp.monty.frameworks.environments.object_init_samplers.Predefined
+      positions: [[-0.817, -0.35, 0.063]]
       rotations: [[0.0,0.0,0.0]]
       scales: [[0.03,0.03,0.03]]
   eval_env_interface_args:
