@@ -292,3 +292,292 @@ class SurfaceAgent(AgentBase):
         self._move_along_local_axis(-action.down_distance, 1)
         self._actuate_pitch(-action.rotation_degrees)
         self._move_along_local_axis(-action.forward_distance, 2)
+
+
+class RobotSurfaceAgent(AgentBase):
+    """Surface agent that moves by controlling robot joints via inverse kinematics.
+
+    Instead of directly teleporting a free-floating camera, this agent attaches
+    its cameras to a "virtual" body that tracks the robot's end-effector.  On
+    every action the desired end-effector pose is computed with the same math as
+    :class:`SurfaceAgent`, then solved for joint positions using damped
+    least-squares IK, and finally the virtual camera body is synced to the
+    actual end-effector pose.
+
+    Args:
+        simulator: The parent MuJoCo simulator.
+        agent_id: Unique identifier for this agent.
+        sensor_configs: Camera/sensor configuration per sensor ID.
+        ee_site_name: Name of the MuJoCo site that marks the end-effector.
+        ik_max_iter: Maximum number of IK iterations per action.
+        ik_tol: Convergence tolerance for the IK solver (metres / radians).
+        ik_damping: Damping factor for the least-squares solve.
+        position: Ignored (the initial camera pose comes from the robot's
+            home joint configuration via forward kinematics).
+        rotation: Ignored (see *position*).
+    """
+
+    def __init__(
+        self,
+        simulator: MuJoCoSimulator,
+        agent_id: AgentID,
+        sensor_configs: dict[SensorID, SensorConfig],
+        robot_name: str = "robot:ur5e",
+        ee_site_name: str = "attachment_site",
+        ee_rotation_offset: QuaternionWXYZ = (0.0, 1.0, 0.0, 0.0),
+        ik_max_iter: int = 100,
+        ik_tol: float = 1e-4,
+        ik_damping: float = 1e-4,
+        position: VectorXYZ = (0.0, 0.0, 0.0),
+        rotation: QuaternionWXYZ = (1.0, 0.0, 0.0, 0.0),
+    ):
+        super().__init__(simulator, agent_id, sensor_configs, position, rotation)
+        self._robot_name = robot_name
+        self._ee_site_name = ee_site_name
+        self._ee_rotation_offset = Rotation.from_quat(
+            [ee_rotation_offset[1], ee_rotation_offset[2],
+             ee_rotation_offset[3], ee_rotation_offset[0]]
+        )
+        self._ik_max_iter = ik_max_iter
+        self._ik_tol = ik_tol
+        self._ik_damping = ik_damping
+
+        # Populated lazily after the model is compiled with robot bodies.
+        self._robot_initialized = False
+        self._ee_site_id: int = -1
+        self._robot_joint_ids: list[int] = []
+        self._robot_dof_ids: list[int] = []
+        self._robot_qpos_addrs: list[int] = []
+
+    # ------------------------------------------------------------------
+    # Lazy robot discovery
+    # ------------------------------------------------------------------
+
+    def _init_robot(self) -> bool:
+        """Discover robot joints and EE site after model compilation.
+
+        Returns:
+            ``True`` if the robot was successfully initialised.
+        """
+        if self._robot_initialized:
+            return True
+
+        model = self.sim.model
+        try:
+            self._ee_site_id = model.site(self._ee_site_name).id
+        except KeyError:
+            return False
+
+        # Walk up from EE site body to find the robot's root body.
+        ee_body_id = model.site_bodyid[self._ee_site_id]
+        robot_root = ee_body_id
+        while model.body_parentid[robot_root] != 0:
+            robot_root = model.body_parentid[robot_root]
+
+        # Collect joints that belong to the robot subtree.
+        agent_jnt_ids = {self.agent_joint.id, self.pitch_joint.id}
+        self._robot_joint_ids = []
+        self._robot_dof_ids = []
+        self._robot_qpos_addrs = []
+
+        for i in range(model.njnt):
+            if i in agent_jnt_ids:
+                continue
+            body_id = model.jnt_bodyid[i]
+            if self._is_descendant_of(body_id, robot_root):
+                self._robot_joint_ids.append(i)
+                self._robot_dof_ids.append(model.jnt_dofadr[i])
+                self._robot_qpos_addrs.append(model.jnt_qposadr[i])
+
+        if not self._robot_joint_ids:
+            logger.warning("RobotSurfaceAgent: no robot joints found")
+            return False
+
+        self._robot_initialized = True
+        logger.info(
+            "RobotSurfaceAgent: discovered %d robot joints, EE site '%s'",
+            len(self._robot_joint_ids),
+            self._ee_site_name,
+        )
+        return True
+
+    def _is_descendant_of(self, body_id: int, ancestor_id: int) -> bool:
+        """Check whether *body_id* is a descendant of *ancestor_id*."""
+        while body_id != 0:
+            if body_id == ancestor_id:
+                return True
+            body_id = self.sim.model.body_parentid[body_id]
+        return False
+
+    # ------------------------------------------------------------------
+    # Inverse kinematics
+    # ------------------------------------------------------------------
+
+    def _ik_solve(self, target_pos: np.ndarray, target_mat: np.ndarray) -> None:
+        """Iterative damped least-squares IK for 6-DOF pose.
+
+        Args:
+            target_pos: Desired end-effector world position (3,).
+            target_mat: Desired end-effector world rotation matrix (3, 3).
+        """
+        import mujoco
+
+        model, data = self.sim.model, self.sim.data
+        dof_ids = np.array(self._robot_dof_ids)
+        n_dof = len(dof_ids)
+
+        for _ in range(self._ik_max_iter):
+            mujoco.mj_forward(model, data)
+
+            # Current EE state
+            cur_pos = data.site_xpos[self._ee_site_id]
+            cur_mat = data.site_xmat[self._ee_site_id].reshape(3, 3)
+
+            # Position error
+            pos_err = target_pos - cur_pos
+
+            # Orientation error (rotation-vector form)
+            err_rot = Rotation.from_matrix(target_mat @ cur_mat.T)
+            rot_err = err_rot.as_rotvec()
+
+            error = np.concatenate([pos_err, rot_err])
+            if np.linalg.norm(error) < self._ik_tol:
+                break
+
+            # Site Jacobian (translational + rotational)
+            jacp = np.zeros((3, model.nv))
+            jacr = np.zeros((3, model.nv))
+            mujoco.mj_jacSite(model, data, jacp, jacr, self._ee_site_id)
+
+            J = np.vstack([jacp[:, dof_ids], jacr[:, dof_ids]])
+
+            # Damped least squares: dq = J^T (J J^T + λI)^{-1} e
+            JJT = J @ J.T + self._ik_damping * np.eye(6)
+            dq = J.T @ np.linalg.solve(JJT, error)
+
+            # Apply joint deltas
+            for i in range(n_dof):
+                data.qpos[self._robot_qpos_addrs[i]] += dq[i]
+
+            # Clamp to joint limits
+            for i, jid in enumerate(self._robot_joint_ids):
+                if model.jnt_limited[jid]:
+                    lo, hi = model.jnt_range[jid]
+                    addr = self._robot_qpos_addrs[i]
+                    data.qpos[addr] = np.clip(data.qpos[addr], lo, hi)
+
+    # ------------------------------------------------------------------
+    # Agent body ↔ end-effector synchronisation
+    # ------------------------------------------------------------------
+
+    def _get_desired_ee_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        """Combine free-joint rotation and pitch hinge into a single EE target.
+
+        The agent body carries the ``ee_rotation_offset`` so that the camera
+        looks outward.  Before sending the target to the IK solver we undo
+        the offset to get the physical EE orientation.
+
+        Returns:
+            ``(position, rotation_matrix)`` — the desired world-frame EE pose.
+        """
+        pos = np.array(self.position)
+        agent_rot = rotation_from_quat(self.rotation)
+        pitch_addr = self.sim.model.jnt_qposadr[self.pitch_joint.id]
+        pitch_angle = self.sim.data.qpos[pitch_addr]
+        pitch_rot = Rotation.from_euler("x", pitch_angle)
+        combined = agent_rot * pitch_rot * self._ee_rotation_offset.inv()
+        return pos, combined.as_matrix()
+
+    def _sync_agent_to_ee(self) -> None:
+        """Teleport the virtual camera body to the actual EE pose."""
+        import mujoco
+
+        mujoco.mj_forward(self.sim.model, self.sim.data)
+        ee_pos = self.sim.data.site_xpos[self._ee_site_id].copy()
+        ee_mat = self.sim.data.site_xmat[self._ee_site_id].reshape(3, 3)
+        ee_rot = Rotation.from_matrix(ee_mat) * self._ee_rotation_offset
+
+        self.position = tuple(ee_pos)
+        self.rotation = rotation_as_quat(ee_rot)
+
+        # Zero the pitch hinge — its effect is absorbed into the free-joint.
+        pitch_addr = self.sim.model.jnt_qposadr[self.pitch_joint.id]
+        self.sim.data.qpos[pitch_addr] = 0.0
+
+    def _solve_and_sync(self) -> None:
+        """IK-solve for the desired EE pose, then sync the camera body."""
+        target_pos, target_mat = self._get_desired_ee_pose()
+        self._ik_solve(target_pos, target_mat)
+        self._sync_agent_to_ee()
+
+    # ------------------------------------------------------------------
+    # Surface-agent actions (same intent, routed through IK)
+    # ------------------------------------------------------------------
+
+    def actuate_move_forward(self, action: MoveForward) -> None:
+        self._init_robot()
+        self._move_along_local_axis(-action.distance, 2)
+        self._solve_and_sync()
+
+    def actuate_move_tangentially(self, action: MoveTangentially) -> None:
+        self._init_robot()
+        if action.distance == 0.0:
+            return
+        direction = np.array(action.direction)
+        direction_length = np.linalg.norm(direction)
+        if np.isclose(direction_length, 0.0):
+            return
+        direction = direction / direction_length
+
+        rotation = rotation_from_quat(self.rotation)
+        direction_rel_world = rotation.apply(direction)
+        self.position = np.array(self.position) + direction_rel_world * action.distance
+        self._solve_and_sync()
+
+    def actuate_orient_horizontal(self, action: OrientHorizontal) -> None:
+        self._init_robot()
+        self._move_along_local_axis(-action.left_distance, 0)
+        self._actuate_yaw(-action.rotation_degrees)
+        self._move_along_local_axis(-action.forward_distance, 2)
+        self._solve_and_sync()
+
+    def actuate_orient_vertical(self, action: OrientVertical) -> None:
+        self._init_robot()
+        self._move_along_local_axis(-action.down_distance, 1)
+        self._actuate_pitch(-action.rotation_degrees)
+        self._move_along_local_axis(-action.forward_distance, 2)
+        self._solve_and_sync()
+
+    # Also support distant-agent look/turn for the positioning procedure.
+    def actuate_turn_right(self, action: TurnRight) -> None:
+        self._init_robot()
+        self._actuate_yaw(-action.rotation_degrees)
+        self._solve_and_sync()
+
+    def actuate_turn_left(self, action: TurnLeft) -> None:
+        self._init_robot()
+        self._actuate_yaw(action.rotation_degrees)
+        self._solve_and_sync()
+
+    def actuate_look_up(self, action: LookUp) -> None:
+        self._init_robot()
+        self._actuate_pitch(action.rotation_degrees)
+        self._solve_and_sync()
+
+    def actuate_look_down(self, action: LookDown) -> None:
+        self._init_robot()
+        self._actuate_pitch(-action.rotation_degrees)
+        self._solve_and_sync()
+
+    # ------------------------------------------------------------------
+    # Reset
+    # ------------------------------------------------------------------
+
+    def reset(self) -> None:
+        if self._init_robot():
+            # Reset robot joints to home (zeros).
+            for addr in self._robot_qpos_addrs:
+                self.sim.data.qpos[addr] = 0.0
+            self._sync_agent_to_ee()
+        else:
+            super().reset()
