@@ -528,3 +528,74 @@ class YCBObjectBuilder(ObjectBuilderBase):
             return output_path
         except Exception:
             return None
+
+
+ROBOT_PREFIX = "robot:"
+
+
+class RobotDescriptionBuilder(ObjectBuilderBase):
+    """Builder for robots from the ``robot_descriptions`` package.
+
+    Objects whose name starts with ``robot:`` (e.g. ``"robot:ur5e"``) are
+    resolved to an MJCF file via the ``robot_descriptions`` package and loaded
+    into the spec using ``spec.from_file``, which preserves the full kinematic
+    tree (joints, actuators, etc.).
+    """
+
+    def is_object(self, name: str | Path) -> bool:
+        return isinstance(name, str) and name.startswith(ROBOT_PREFIX)
+
+    def _resolve_mjcf_path(self, name: str) -> Path:
+        """Resolve a ``robot:<name>`` string to an MJCF file path.
+
+        Args:
+            name: Robot identifier, e.g. ``"robot:ur5e"``.
+
+        Returns:
+            Path to the MJCF XML file.
+
+        Raises:
+            ValueError: If the robot description module is not found.
+        """
+        import importlib
+
+        robot_name = name[len(ROBOT_PREFIX):]
+        module_name = f"robot_descriptions.{robot_name}_mj_description"
+        try:
+            mod = importlib.import_module(module_name)
+        except ModuleNotFoundError as e:
+            raise ValueError(
+                f"Robot description not found for {robot_name!r}. "
+                f"Expected module {module_name} from the robot_descriptions "
+                f"package."
+            ) from e
+        return Path(mod.MJCF_PATH)
+
+    def add_to_spec(
+        self,
+        spec: MjSpec,
+        object_count: int,
+        position: VectorXYZ,
+        rotation: QuaternionWXYZ,
+        scale: VectorXYZ,
+        name: str | Path,
+        **kwargs,
+    ) -> None:
+        """Load a robot MJCF into the spec.
+
+        This uses ``spec.from_file`` to load the full robot model, preserving
+        its kinematic tree, joints, and actuators.  Unlike other builders, the
+        robot replaces the spec contents rather than being appended as a child
+        body — call this **before** adding other objects to the scene.
+
+        Position, rotation, and scale are currently ignored because the robot's
+        placement comes from its MJCF file.  They can be overridden later via
+        the compiled model's ``body`` API.
+        """
+        mjcf_path = self._resolve_mjcf_path(str(name))
+        spec.from_file(str(mjcf_path))
+
+        # Remove keyframes — their qpos sizes are for the original model and
+        # become invalid once additional bodies (e.g. agents) are added.
+        for key in list(spec.key):
+            key.delete()

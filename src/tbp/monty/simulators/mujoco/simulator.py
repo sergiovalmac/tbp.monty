@@ -38,6 +38,7 @@ from tbp.monty.simulators.mujoco.object_builders import (
     MJCFObjectBuilder,
     ObjectBuilderBase,
     PrimitiveObjectBuilder,
+    RobotDescriptionBuilder,
 )
 from tbp.monty.simulators.simulator import Simulator
 
@@ -65,8 +66,9 @@ class MuJoCoSimulator(Simulator):
 
     def __init__(
         self,
-        agent_configs: Sequence[AgentConfig],
-        data_path: PathLike,
+        agent_configs: Sequence[AgentConfig] = (),
+        data_path: PathLike | None = None,
+        mjcf_file: Path | str | None = None,
         # TODO: remove after adding remaining arguments
         **kwargs,  # noqa: ARG002
     ) -> None:
@@ -79,14 +81,12 @@ class MuJoCoSimulator(Simulator):
         self._agents: dict[AgentID, Agent] = {}
         self._create_agents()
 
-        # Track how many objects we add to the environment.
-        # Note: We can't use the `model.ngeoms` for this since that will include parts
-        # of the agents, especially when we start to add more structure to them.
         self._object_count = 0
 
         self._primitive_builder = PrimitiveObjectBuilder()
         self._data_path_ycb_builder = YCBObjectBuilder(self.data_path)
         self._mjcf_builder = MJCFObjectBuilder()
+        self._robot_builder = RobotDescriptionBuilder()
 
         self._recompile()
 
@@ -147,6 +147,12 @@ class MuJoCoSimulator(Simulator):
         )
         self._object_count += 1
 
+        # Robot builders replace the spec via from_file, wiping any existing
+        # bodies (including agents).  Re-create agents so their spec-level
+        # joints are valid before recompile.
+        if isinstance(builder, RobotDescriptionBuilder) and self._agent_configs:
+            self._create_agents()
+
         self._recompile()
 
         return ObjectInfo(
@@ -168,11 +174,13 @@ class MuJoCoSimulator(Simulator):
         Raises:
             UnknownShapeType: If no builder can handle the given name.
         """
+        if self._robot_builder.is_object(name):
+            return self._robot_builder
         if self._mjcf_builder.is_object(name):
             return self._mjcf_builder
         if self._primitive_builder.is_object(name):
             return self._primitive_builder
-        if self._data_path_ycb_builder.is_object(name):
+        if self._data_path_ycb_builder and self._data_path_ycb_builder.is_object(name):
             return self._data_path_ycb_builder
         raise UnknownShapeType(
             f"No builder found for object: {name!r}. "

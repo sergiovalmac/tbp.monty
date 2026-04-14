@@ -130,13 +130,13 @@ config:
       agents:
         agent_args:
           agent_id: ${monty.agent_id:agent_id_0}
-          position: [0.0, 1.5, 0.2]
+          position: [-0.3, -0.05, 0.35]
           sensor_configs:
             patch:
               position: [0.0, 0.0, 0.0]
               rotation: [1.0, 0.0, 0.0, 0.0]
               resolution: [64, 64]
-              zoom: 10.0
+              zoom: 1.0
             view_finder:
               position: [ 0.0, 0.0, 0.0 ]
               rotation: [ 1.0, 0.0, 0.0, 0.0 ]
@@ -160,19 +160,23 @@ config:
         - 256
       world_coord: true
       zooms:
-      - 10.0
+      - 1.0
       - 1.0
       get_all_points: true
       use_semantic_sensor: false
   train_env_interface_class: ${monty.class:tbp.monty.frameworks.environments.embodied_data.InformedEnvironmentInterface}
   train_env_interface_args:
+    good_view_distance: 0.12
+    good_view_percentage: 0.2
     object_names:
-      - sphere
+      # - sphere
       # - 025_mug
+      # - 012_strawberry
+      - robot:ur5e
     object_init_sampler:
       _target_: tbp.monty.frameworks.environments.object_init_samplers.Predefined
       rotations: [[0.0,0.0,0.0]]
-      scales: [[0.03,0.03,0.03]]  # Use [[0.03,0.03,0.03]] for primitive shape and [[0.3,0.3,0.3]] for YCB objects
+      scales: [[0.3,0.3,0.3]]
   eval_env_interface_args:
     parent_to_child_mapping: null
     object_names:
