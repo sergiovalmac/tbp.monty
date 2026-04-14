@@ -22,7 +22,11 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 import numpy as np
+import quaternion as qt
+import trimesh
+
 from mujoco import MjSpec, MjsBody, mjtGeom, mjtTexture, mjtTextureRole
+from PIL import Image
 
 from tbp.monty.math import QuaternionWXYZ, VectorXYZ
 
@@ -36,6 +40,35 @@ PRIMITIVE_GEOM_TYPES: dict[str, mjtGeom] = {
     "ellipsoid": mjtGeom.mjGEOM_ELLIPSOID,
     "sphere": mjtGeom.mjGEOM_SPHERE,
 }
+
+def quaternion_to_list(rotation) -> list[float]:
+    """Convert a quaternion to a flat list in wxyz order for MuJoCo.
+
+    Accepts the heterogeneous quaternion representations used throughout the
+    codebase and normalises them into the ``[w, x, y, z]`` list that MuJoCo's
+    spec API expects.
+
+    Leverages :func:`quaternion.as_float_array` for ``quaternion.quaternion``
+    objects (the same helper used by the framework's ``BufferEncoder``).
+
+    Args:
+        rotation: Quaternion in any supported format —
+            ``quaternion.quaternion``, ``numpy.ndarray``, or 4-tuple/list.
+
+    Returns:
+        List of quaternion components ``[w, x, y, z]``.
+
+    Raises:
+        ValueError: If the format is not recognised.
+    """
+    if isinstance(rotation, qt.quaternion):
+        return qt.as_float_array(rotation).tolist()
+    elif isinstance(rotation, np.ndarray):
+        return rotation.tolist()
+    elif isinstance(rotation, (tuple, list)) and len(rotation) == 4:
+        return list(rotation)
+    else:
+        raise ValueError(f"Unsupported quaternion format: {type(rotation)}")
 
 
 class ObjectBuilderBase(ABC):
@@ -114,68 +147,6 @@ class PrimitiveObjectBuilder(ObjectBuilderBase):
 
     def is_object(self, name: str | Path) -> bool:
         return isinstance(name, str) and name in PRIMITIVE_GEOM_TYPES
-
-
-class DataPathYCBBuilder(ObjectBuilderBase):
-    """Builder for YCB objects stored as pre-converted files.
-
-    Expects each object's files in a directory under ``data_path`` matching
-    the object name, containing ``textured.obj``, ``texture_map.png``, and
-    ``metadata.json``.
-    """
-
-    def __init__(self, data_path: Path):
-        self.data_path = data_path
-
-    def add_to_spec(
-        self,
-        spec: MjSpec,
-        object_count: int,
-        position: VectorXYZ,
-        rotation: QuaternionWXYZ,
-        scale: VectorXYZ,
-        name: str | Path,
-        **kwargs,
-    ) -> None:
-        assert isinstance(name, str), "YCB object name must be a string"
-        path = self.data_path / name
-        if not path.exists():
-            raise FileNotFoundError(f"YCB object directory not found: {path}")
-
-        obj_name = f"{name}_{object_count}"
-
-        spec.add_texture(
-            name=f"{obj_name}_tex",
-            type=mjtTexture.mjTEXTURE_2D,
-            file=str(path / "texture_map.png"),
-        )
-        mat = spec.add_material(name=f"{obj_name}_mat")
-        mat.textures[mjtTextureRole.mjTEXROLE_RGB] = f"{obj_name}_tex"
-
-        metadata_path = path / "metadata.json"
-        with metadata_path.open() as f:
-            metadata = json.load(f)
-
-        spec.add_mesh(
-            name=f"{obj_name}_mesh",
-            file=str(path / "textured.obj"),
-            refquat=metadata["refquat"],
-            refpos=metadata["refpos"],
-        )
-        spec.worldbody.add_geom(
-            name=obj_name,
-            type=mjtGeom.mjGEOM_MESH,
-            meshname=f"{obj_name}_mesh",
-            material=f"{obj_name}_mat",
-            size=scale,
-            pos=position,
-            quat=rotation,
-        )
-
-    def is_object(self, name: str | Path) -> bool:
-        if not isinstance(name, str):
-            return False
-        return (self.data_path / name).exists()
 
 
 class MJCFObjectBuilder(ObjectBuilderBase):
@@ -317,3 +288,243 @@ class MJCFObjectBuilder(ObjectBuilderBase):
             return False
         path_obj = Path(name) if isinstance(name, str) else name
         return path_obj.exists() and path_obj.suffix.lower() in VALID_MJCF_EXTENSIONS
+
+
+class YCBObjectBuilder(ObjectBuilderBase):
+    """Builder for YCB objects stored as pre-converted files.
+
+    Expects each object's files in a directory under ``data_path`` matching
+    the object name, containing ``textured.obj``, ``texture_map.png``, and
+    ``metadata.json``.
+    """
+
+    def __init__(self, ycb_path: Path):
+        self.data_path = ycb_path
+        self.ycb_path = ycb_path
+        self.cache_dir = Path.home() / ".cache" / "tbp" / "mujoco_meshes"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def is_object(self, name: str | Path) -> bool:
+        """Check if the given name refers to a YCB object.
+
+        Args:
+            name: Object name to check
+
+        Returns:
+            True if this is a YCB object, False otherwise
+        """
+        if not isinstance(name, str):
+            return False
+        ycb_mesh_path = self.ycb_path / "meshes" / name
+        return ycb_mesh_path.exists()
+
+    def add_to_spec(
+        self,
+        spec: MjSpec,
+        object_count: int,
+        position: VectorXYZ,
+        rotation: QuaternionWXYZ | qt.quaternion | np.ndarray,
+        scale: VectorXYZ,
+        name: str | Path,
+        **kwargs,
+    ) -> None:
+        """Add a YCB object mesh to the MuJoCo spec.
+
+        When the source GLB contains a texture, this method also creates the
+        corresponding MuJoCo texture, material, and assigns the material to the
+        mesh geom so the object renders with its original appearance.
+
+        Args:
+            spec: MuJoCo spec to add the object to
+            object_count: Unique identifier for the object instance
+            name: YCB object name (e.g., '002_master_chef_can')
+            position: Initial position of the object
+            rotation: Initial orientation of the object
+            scale: Scale factors for x, y, z dimensions
+
+        Raises:
+            FileNotFoundError: If the mesh file cannot be found
+        """
+        assert isinstance(name, str), "YCB object name must be a string"
+        mesh_file = self._find_mesh_file(name)
+        obj_name = f"{name}_{object_count}"
+        obj_file, texture_file = self._convert_glb_to_obj(mesh_file, obj_name)
+
+        # Add mesh to spec
+        mesh = spec.add_mesh()
+        mesh.name = obj_name
+        mesh.file = str(obj_file)
+        mesh.scale = scale
+
+        # Add texture + material if a texture was extracted
+        material_name = None
+        if texture_file is not None:
+            material_name = self._add_texture_and_material(spec, obj_name, texture_file)
+
+        # Add body for the mesh
+        body = spec.worldbody.add_body()
+        body.name = f"{obj_name}_body"
+        body.pos = position
+        body.quat = quaternion_to_list(rotation)
+
+        # Add geom that uses the mesh
+        geom = body.add_geom()
+        geom.name = obj_name
+        geom.type = mjtGeom.mjGEOM_MESH
+        geom.meshname = obj_name
+
+        if material_name is not None:
+            geom.material = material_name
+
+    @staticmethod
+    def _add_texture_and_material(
+        spec: MjSpec, obj_name: str, texture_file: Path
+    ) -> str:
+        """Create a MuJoCo texture and material referencing a PNG file.
+
+        MuJoCo does not auto-parse MTL files, so texture and material must be
+        created explicitly in the spec.
+
+        Args:
+            spec: MuJoCo spec to add assets to
+            obj_name: Base name used to derive unique asset names
+            texture_file: Absolute path to the PNG texture image
+
+        Returns:
+            The name of the created material (to assign to the geom).
+        """
+        tex_name = f"{obj_name}_tex"
+        mat_name = f"{obj_name}_mat"
+
+        # Read image dimensions
+        with Image.open(str(texture_file)) as img:
+            width, height = img.size
+
+        # Add texture
+        tex = spec.add_texture()
+        tex.name = tex_name
+        tex.type = mjtTexture.mjTEXTURE_2D
+        tex.file = str(texture_file)
+        tex.width = width
+        tex.height = height
+        tex.nchannel = 3
+
+        # Add material that references the texture.
+        # NOTE: ``mat.textures`` returns a *copy* of the internal list, so
+        # item assignment (``mat.textures[i] = …``) silently fails.  We must
+        # assign the whole list at once.  Index 1 corresponds to the "2d"
+        # texture role (``mjTEXROLE_RGB``) which is what ``<material
+        # texture="…"/>`` maps to in MJCF XML.
+        mat = spec.add_material()
+        mat.name = mat_name
+        tex_slots = [""] * 10
+        tex_slots[1] = tex_name
+        mat.textures = tex_slots
+        mat.texrepeat = [1, 1]
+
+        return mat_name
+
+    def _find_mesh_file(self, ycb_name: str) -> Path:
+        """Find the mesh file for a YCB object.
+
+        Prefers ``textured.glb.orig`` because it contains standard PNG textures
+        that trimesh can decode.  The regular ``textured.glb`` uses Basis
+        Universal compressed textures (``image/x-basis``) which trimesh cannot
+        read, so textures would be lost.
+
+        Args:
+            ycb_name: YCB object name (e.g., '002_master_chef_can')
+
+        Returns:
+            Path to the mesh file
+
+        Raises:
+            FileNotFoundError: If no suitable mesh file is found
+        """
+        mesh_dir = self.ycb_path / "meshes" / ycb_name / "google_16k"
+
+        if not mesh_dir.exists():
+            raise FileNotFoundError(f"Mesh directory not found: {mesh_dir}")
+
+        # Prefer .glb.orig (has PNG textures that trimesh can decode)
+        glb_orig = mesh_dir / "textured.glb.orig"
+        if glb_orig.exists():
+            return glb_orig
+
+        # Fall back to .glb (Basis Universal textures – no texture support)
+        glb_file = mesh_dir / "textured.glb"
+        if glb_file.exists():
+            return glb_file
+
+        raise FileNotFoundError(f"No mesh file found in {mesh_dir}")
+
+    def _convert_glb_to_obj(
+        self, glb_file: Path, obj_name: str
+    ) -> tuple[Path, Path | None]:
+        """Convert GLB mesh file to OBJ format for MuJoCo.
+
+        When the GLB contains a PNG base-color texture (as in ``.glb.orig``
+        files), the texture image is extracted and saved alongside the OBJ so
+        that MuJoCo can reference it.
+
+        Args:
+            glb_file: Path to the GLB file
+            obj_name: Name for the output OBJ file
+
+        Returns:
+            Tuple of (obj_path, texture_path).  ``texture_path`` is ``None``
+            when the mesh has no extractable texture.
+        """
+        obj_file = self.cache_dir / f"{obj_name}.obj"
+        tex_file = self.cache_dir / f"{obj_name}_texture.png"
+
+        # Skip conversion if OBJ already exists
+        if obj_file.exists():
+            return obj_file, tex_file if tex_file.exists() else None
+
+        # Load GLB (force file_type='glb' for .glb.orig extension)
+        mesh = trimesh.load(str(glb_file), file_type="glb")
+
+        # Handle scene vs single mesh
+        if isinstance(mesh, trimesh.Scene):
+            mesh = trimesh.util.concatenate(
+                [
+                    geom
+                    for geom in mesh.geometry.values()
+                    if isinstance(geom, trimesh.Trimesh)
+                ]
+            )
+
+        # Export as OBJ (preserves UV coordinates)
+        mesh.export(str(obj_file))
+
+        # Extract texture if available
+        texture_path = self._extract_texture(mesh, tex_file)
+
+        return obj_file, texture_path
+
+    @staticmethod
+    def _extract_texture(mesh: trimesh.Trimesh, output_path: Path) -> Path | None:
+        """Extract the base-color texture image from a trimesh object.
+
+        Args:
+            mesh: Trimesh with potential texture material
+            output_path: Where to save the extracted PNG
+
+        Returns:
+            Path to the saved texture, or ``None`` if no texture was found.
+        """
+        try:
+            material = mesh.visual.material
+            base_color = getattr(material, "baseColorTexture", None)
+            if base_color is None:
+                base_color = getattr(material, "image", None)
+            if base_color is None:
+                return None
+
+            # Convert to RGB (MuJoCo expects 3-channel textures)
+            rgb = base_color.convert("RGB")
+            rgb.save(str(output_path))
+            return output_path
+        except Exception:
+            return None

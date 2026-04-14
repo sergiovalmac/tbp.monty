@@ -168,11 +168,11 @@ config:
   train_env_interface_args:
     object_names:
       # - sphere
-      - mug
+      - 025_mug
     object_init_sampler:
       _target_: tbp.monty.frameworks.environments.object_init_samplers.Predefined
       rotations: [[0.0,0.0,0.0]]
-      scales: [[0.03,0.03,0.03]]
+      scales: [[0.3,0.3,0.3]]
   eval_env_interface_args:
     parent_to_child_mapping: null
     object_names:

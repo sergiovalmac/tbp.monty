@@ -34,7 +34,7 @@ from tbp.monty.frameworks.models.motor_system_state import (
 from tbp.monty.math import QuaternionWXYZ, VectorXYZ
 from tbp.monty.simulators.mujoco import Agent, AgentConfig, Size
 from tbp.monty.simulators.mujoco.object_builders import (
-    DataPathYCBBuilder,
+    YCBObjectBuilder,
     MJCFObjectBuilder,
     ObjectBuilderBase,
     PrimitiveObjectBuilder,
@@ -85,7 +85,7 @@ class MuJoCoSimulator(Simulator):
         self._object_count = 0
 
         self._primitive_builder = PrimitiveObjectBuilder()
-        self._data_path_ycb_builder = DataPathYCBBuilder(self.data_path)
+        self._data_path_ycb_builder = YCBObjectBuilder(self.data_path)
         self._mjcf_builder = MJCFObjectBuilder()
 
         self._recompile()
