@@ -18,6 +18,7 @@ from mujoco import (
     MjSpec,
     mj_forward,
 )
+from mujoco.viewer import launch_passive
 from typing_extensions import override
 
 from tbp.monty.frameworks.actions.actions import Action
@@ -67,16 +68,17 @@ class MuJoCoSimulator(Simulator):
     def __init__(
         self,
         agent_configs: Sequence[AgentConfig] = (),
-        data_path: PathLike | None = None,
-        mjcf_file: Path | str | None = None,
-        # TODO: remove after adding remaining arguments
-        **kwargs,  # noqa: ARG002
+        ycb_path: PathLike | None = None,
+        show_viewer: bool = False,
     ) -> None:
+        self._show_viewer = show_viewer
+        self._viewer = None
+
         self.spec = MjSpec()
         self.model: MjModel = self.spec.compile()
         self.data = MjData(self.model)
 
-        self.data_path = Path(data_path)
+        self.data_path = Path(ycb_path)
         self._agent_configs = agent_configs
         self._agents: dict[AgentID, Agent] = {}
         self._create_agents()
@@ -123,6 +125,7 @@ class MuJoCoSimulator(Simulator):
         w, h = self._max_sensor_resolution()
         self.model.vis.global_.offwidth = w
         self.model.vis.global_.offheight = h
+        self._reopen_viewer()
 
     def remove_all_objects(self) -> None:
         self.spec = MjSpec()
@@ -201,6 +204,7 @@ class MuJoCoSimulator(Simulator):
                 logger.warning(f"{agent} does not understand {action}")
                 continue
         mj_forward(self.model, self.data)
+        self._sync_viewer()
         return self.observations, self.states
 
     @property
@@ -222,7 +226,26 @@ class MuJoCoSimulator(Simulator):
         for agent in self._agents.values():
             agent.reset()
         mj_forward(self.model, self.data)
+        self._sync_viewer()
         return self.observations, self.states
 
+    def _reopen_viewer(self) -> None:
+        """Reopen the viewer after model recompilation."""
+        if not self._show_viewer:
+            return
+        if self._viewer is not None and self._viewer.is_running():
+            self._viewer.close()
+        self._viewer = launch_passive(self.model, self.data)
+        self._viewer.sync()
+
+    def _sync_viewer(self) -> None:
+        """Sync the viewer to reflect the current data state."""
+        if not self._show_viewer:
+            return
+        if self._viewer is not None and self._viewer.is_running():
+            self._viewer.sync()
+
     def close(self) -> None:
-        pass
+        if self._viewer is not None and self._viewer.is_running():
+            self._viewer.close()
+            self._viewer = None

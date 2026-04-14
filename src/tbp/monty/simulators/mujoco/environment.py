@@ -34,11 +34,14 @@ class MuJoCoEnvironment(SimulatedObjectEnvironment):
         self,
         agents: AgentConfig,
         data_path: PathLike,
+        show_viewer: bool = False,
         **kwargs,
     ) -> None:
         # TODO: Change the configuration to support multiple agents
         agent_configs = [agents]
-        self._sim = MuJoCoSimulator(agent_configs, data_path, **kwargs)
+        self._sim = MuJoCoSimulator(
+            agent_configs, data_path, show_viewer=show_viewer
+        )
 
     def step(
         self, action: Sequence[Action]

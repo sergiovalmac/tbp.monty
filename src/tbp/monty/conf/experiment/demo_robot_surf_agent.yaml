@@ -134,6 +134,7 @@ config:
       scene_id: null
       seed: 42
       data_path: ${path.expanduser:${oc.env:MONTY_DATA}/habitat/objects/ycb}
+      show_viewer: true
       agents:
         agent_args:
           agent_id: ${monty.agent_id:agent_id_0}
