@@ -8,6 +8,7 @@
 # https://opensource.org/licenses/MIT.
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
 import quaternion as qt
@@ -49,12 +50,13 @@ class MuJoCoEnvironment(SimulatedObjectEnvironment):
 
     def add_object(
         self,
-        name: str,
+        name: str | Path,
         position: VectorXYZ = (0.0, 0.0, 0.0),
         rotation: QuaternionWXYZ = (1.0, 0.0, 0.0, 0.0),
         scale: VectorXYZ = (1.0, 1.0, 1.0),
         semantic_id: SemanticID | None = None,
         primary_target_object: ObjectID | None = None,
+        **kwargs,
     ) -> ObjectID:
         # TODO: Move this up the call chain since this method's argument types are lying
         if isinstance(rotation, qt.quaternion):
@@ -65,7 +67,8 @@ class MuJoCoEnvironment(SimulatedObjectEnvironment):
                 rotation.z,
             )
         return self._sim.add_object(
-            name, position, rotation, scale, semantic_id, primary_target_object
+            name, position, rotation, scale, semantic_id, primary_target_object,
+            **kwargs,
         ).object_id
 
     def remove_all_objects(self) -> None:

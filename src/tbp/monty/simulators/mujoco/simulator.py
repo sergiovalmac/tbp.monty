@@ -8,7 +8,6 @@
 # https://opensource.org/licenses/MIT.
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
@@ -16,12 +15,8 @@ from typing import TYPE_CHECKING, Sequence
 from mujoco import (
     MjData,
     MjModel,
-    MjsBody,
     MjSpec,
     mj_forward,
-    mjtGeom,
-    mjtTexture,
-    mjtTextureRole,
 )
 from typing_extensions import override
 
@@ -38,6 +33,12 @@ from tbp.monty.frameworks.models.motor_system_state import (
 )
 from tbp.monty.math import QuaternionWXYZ, VectorXYZ
 from tbp.monty.simulators.mujoco import Agent, AgentConfig, Size
+from tbp.monty.simulators.mujoco.object_builders import (
+    DataPathYCBBuilder,
+    MJCFObjectBuilder,
+    ObjectBuilderBase,
+    PrimitiveObjectBuilder,
+)
 from tbp.monty.simulators.simulator import Simulator
 
 if TYPE_CHECKING:
@@ -45,15 +46,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-# Map of names to MuJoCo primitive object types
-PRIMITIVE_OBJECT_TYPES = {
-    "box": mjtGeom.mjGEOM_BOX,
-    "capsule": mjtGeom.mjGEOM_CAPSULE,
-    "cylinder": mjtGeom.mjGEOM_CYLINDER,
-    "ellipsoid": mjtGeom.mjGEOM_ELLIPSOID,
-    "sphere": mjtGeom.mjGEOM_SPHERE,
-}
 
 
 class UnknownShapeType(RuntimeError):
@@ -91,6 +83,10 @@ class MuJoCoSimulator(Simulator):
         # Note: We can't use the `model.ngeoms` for this since that will include parts
         # of the agents, especially when we start to add more structure to them.
         self._object_count = 0
+
+        self._primitive_builder = PrimitiveObjectBuilder()
+        self._data_path_ycb_builder = DataPathYCBBuilder(self.data_path)
+        self._mjcf_builder = MJCFObjectBuilder()
 
         self._recompile()
 
@@ -137,19 +133,18 @@ class MuJoCoSimulator(Simulator):
     @override
     def add_object(
         self,
-        name: str,
+        name: str | Path,
         position: VectorXYZ = (0.0, 0.0, 0.0),
         rotation: QuaternionWXYZ = (1.0, 0.0, 0.0, 0.0),
         scale: VectorXYZ = (1.0, 1.0, 1.0),
         semantic_id: SemanticID | None = None,
         primary_target_object: ObjectID | None = None,
+        **kwargs,
     ) -> ObjectInfo:
-        obj_name = f"{name}_{self._object_count}"
-
-        if name in PRIMITIVE_OBJECT_TYPES:
-            self._add_primitive_object(obj_name, name, position, rotation, scale)
-        else:
-            self._add_ycb_object(obj_name, name, position, rotation, scale)
+        builder = self._get_object_builder(name)
+        builder.add_to_spec(
+            self.spec, self._object_count, position, rotation, scale, name, **kwargs
+        )
         self._object_count += 1
 
         self._recompile()
@@ -159,98 +154,30 @@ class MuJoCoSimulator(Simulator):
             semantic_id=semantic_id,
         )
 
-    def _add_ycb_object(
-        self,
-        obj_name: str,
-        shape_type: str,
-        position: VectorXYZ,
-        rotation: QuaternionWXYZ,
-        scale: VectorXYZ,
-    ):
-        """Adds an object from the YCB dataset.
+    def _get_object_builder(self, name: str | Path) -> ObjectBuilderBase:
+        """Get the appropriate builder for the given object name.
 
-        This assumes that each object's files are stored in a directory in the
-        `data_path` matching their name, and containing 'textured.obj' and
-        'texture_map.png'.
+        Checks builders in order: MJCF file, primitive shape, data-path YCB.
 
-        Arguments:
-            obj_name: Identifier for the object in the scene, must be unique.
-            shape_type: Type of the object in the scene.
-            position: Position of the object in the scene.
-            rotation: Rotation of the object in the scene.
-            scale: Scale of the object in the scene.
+        Args:
+            name: Object name or path to identify the builder.
+
+        Returns:
+            The matching builder instance.
 
         Raises:
-            UnknownShapeType: when shape_type is unknown.
+            UnknownShapeType: If no builder can handle the given name.
         """
-        path = self.data_path / shape_type
-
-        if not path.exists():
-            raise UnknownShapeType(f"Unknown YCB object: {shape_type}")
-
-        self.spec.add_texture(
-            name=f"{shape_type}_tex",
-            type=mjtTexture.mjTEXTURE_2D,
-            file=f"{path / 'texture_map.png'}",
-        )
-        mat = self.spec.add_material(
-            name=f"{shape_type}_mat",
-        )
-        mat.textures[mjtTextureRole.mjTEXROLE_RGB] = f"{shape_type}_tex"
-
-        metadata_path = path / "metadata.json"
-        metadata = json.load(metadata_path.open())
-
-        self.spec.add_mesh(
-            name=f"{shape_type}_mesh",
-            file=f"{path / 'textured.obj'}",
-            refquat=metadata["refquat"],
-            refpos=metadata["refpos"],
-        )
-        self.spec.worldbody.add_geom(
-            name=obj_name,
-            type=mjtGeom.mjGEOM_MESH,
-            meshname=f"{shape_type}_mesh",
-            material=f"{shape_type}_mat",
-            size=scale,
-            pos=position,
-            quat=rotation,
-        )
-
-    def _add_primitive_object(
-        self,
-        obj_name: str,
-        shape_type: str,
-        position: VectorXYZ,
-        rotation: QuaternionWXYZ,
-        scale: VectorXYZ,
-    ) -> None:
-        """Adds a built-in MuJoCo primitive geom to the scene spec.
-
-        Arguments:
-            obj_name: Identifier for the object in the scene, must be unique.
-            shape_type: The primitive shape to add.
-            position: Initial position of the object.
-            rotation: Initial orientation of the object.
-            scale: Initial scale of the object.
-
-        Raises:
-            UnknownShapeType: When the shape_type is unknown.
-        """
-        world_body: MjsBody = self.spec.worldbody
-
-        # TODO: should we encapsulate primitive objects into bodies
-        try:
-            geom_type = PRIMITIVE_OBJECT_TYPES[shape_type]
-        except KeyError:
-            raise UnknownShapeType(f"Unknown MuJoCo primitive: {shape_type}") from None
-
-        world_body.add_geom(
-            name=obj_name,
-            type=geom_type,
-            size=scale,
-            pos=position,
-            quat=rotation,
+        if self._mjcf_builder.is_object(name):
+            return self._mjcf_builder
+        if self._primitive_builder.is_object(name):
+            return self._primitive_builder
+        if self._data_path_ycb_builder.is_object(name):
+            return self._data_path_ycb_builder
+        raise UnknownShapeType(
+            f"No builder found for object: {name!r}. "
+            f"Expected a primitive name, MJCF file path, or YCB object in "
+            f"{self.data_path}"
         )
 
     @override
