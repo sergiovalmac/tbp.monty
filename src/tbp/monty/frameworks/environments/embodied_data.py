@@ -10,27 +10,35 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 from pprint import pformat
-from typing import Iterable, Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 import numpy as np
 import quaternion as qt
+from omegaconf import ListConfig
 
-from tbp.monty.context import RuntimeContext
 from tbp.monty.frameworks.actions.actions import (
     Action,
 )
-from tbp.monty.frameworks.agents import AgentID
-from tbp.monty.frameworks.environment_utils.transforms import TransformContext
+from tbp.monty.frameworks.environment_utils.transforms import (
+    Transform,
+    TransformContext,
+)
 from tbp.monty.frameworks.environments.environment import (
     ObjectID,
     SemanticID,
     SimulatedObjectEnvironment,
 )
+from tbp.monty.frameworks.environments.object_init_samplers import (
+    Default,
+    MultiObjectNames,
+    ObjectInitParams,
+    Predefined,
+    RandomRotation,
+)
 from tbp.monty.frameworks.environments.positioning_procedures import (
-    GetGoodView,
+    PositioningProcedureFactory,
 )
 from tbp.monty.frameworks.environments.two_d_data import (
     OmniglotEnvironment,
@@ -39,20 +47,14 @@ from tbp.monty.frameworks.environments.two_d_data import (
 )
 from tbp.monty.frameworks.experiments.mode import ExperimentMode
 from tbp.monty.frameworks.models.abstract_monty_classes import Observations
-from tbp.monty.frameworks.models.motor_policies import (
-    SurfacePolicy,
-)
-from tbp.monty.frameworks.models.motor_system import MotorSystem
 from tbp.monty.frameworks.models.motor_system_state import (
     MotorSystemState,
     ProprioceptiveState,
 )
-from tbp.monty.frameworks.sensors import SensorID
 
 __all__ = [
     "EnvironmentInterface",
     "EnvironmentInterfacePerObject",
-    "InformedEnvironmentInterface",
     "OmniglotEnvironmentInterface",
     "SaccadeOnImageEnvironmentInterface",
     "SaccadeOnImageFromStreamEnvironmentInterface",
@@ -61,18 +63,29 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+def normalize_transforms(
+    transform: Transform | Sequence[Transform] | None,
+) -> tuple[Transform, ...]:
+    """Normalize transform configuration to a tuple of transforms.
+
+    Returns:
+        A tuple of transforms.
+    """
+    if transform is None:
+        return ()
+    if callable(transform):
+        return (transform,)
+    return tuple(transform)
+
+
 class EnvironmentInterface:
     """Provides an interface to an embodied environment.
 
-    The observations are based on the actions returned by the `motor_system`.
-
-    The first values returned by this iterator are the observations of the
-    environment's initial state, subsequent observations are returned after the action
-    returned by `motor_system` is applied.
+    Observations and proprioceptive state are returned from the environment
+    based on the actions taken.
 
     Attributes:
         env: An instance of a class that implements :class:`SimulatedObjectEnvironment`.
-        motor_system: :class:`MotorSystem`
         rng: Random number generator to use.
         seed: The configured random seed.
         experiment_mode: The experiment mode that this environment interface is used
@@ -81,95 +94,43 @@ class EnvironmentInterface:
             the environment.
 
     Note:
-        If the amount variable returned by motor_system is None, the amount used by
-        habitat will be the default for the actuator, e.g.
-        PanTiltZoomCamera.translation_step
-
-    Note:
         This one on its own won't work.
-
-    Raises:
-        TypeError: If `motor_system` is not an instance of `MotorSystem`.
     """
 
     def __init__(
         self,
         env: SimulatedObjectEnvironment,
-        motor_system: MotorSystem,
-        rng,
+        rng: np.random.RandomState,
         seed: int,
         experiment_mode: ExperimentMode,
-        transform=None,
+        transform: Transform | Sequence[Transform] | None = None,
     ):
-        if not isinstance(motor_system, MotorSystem):
-            raise TypeError(
-                f"motor_system must be an instance of MotorSystem, got {motor_system}"
-            )
         self.env = env
-        self.motor_system = motor_system
         self.rng = rng
         self.seed = seed
-        self.transform = transform
-        self._observations, self._proprioceptive_state = self.reset(self.rng)
-        self.motor_system._state = MotorSystemState(self._proprioceptive_state)
+        self.transforms = normalize_transforms(transform)
+        self.reset(self.rng)
         self.experiment_mode = experiment_mode
 
     def reset(self, rng: np.random.RandomState):
         self.rng = rng
         observations, state = self.env.reset()
 
-        if self.transform is not None:
-            observations = self.apply_transform(self.transform, observations, state)
+        if self.transforms:
+            observations = self.apply_transform(observations, state)
         return observations, state
 
     def apply_transform(
-        self, transform, observations: Observations, state: ProprioceptiveState
+        self,
+        observations: Observations,
+        state: ProprioceptiveState,
     ) -> Observations:
         ctx = TransformContext(rng=self.rng, state=state)
-        if isinstance(transform, Iterable):
-            for t in transform:
-                observations = t(observations, ctx)
-        else:
+        for transform in self.transforms:
             observations = transform(observations, ctx)
         return observations
 
     def step(
-        self,
-        ctx: RuntimeContext,
-        actions: Sequence[Action] | None = None,
-        first: bool = False,
-    ) -> tuple[Observations, ProprioceptiveState]:
-        """Request actions from the motor system and step the environment.
-
-        Args:
-            ctx: The runtime context.
-            actions: The actions to take in the environment.
-            first: Whether this is the first step of the episode. If True, then
-                return the initial observations and proprioceptive state without
-                requesting actions from the motor system or stepping the environment.
-                TODO: This is a hack to preserve the behavior that the first call
-                      to the environment interface returns the observations and
-                      proprioceptive state that are returned by the environment's
-                      reset method. Once the EnvironmentInterface stops invoking
-                      motor_system(ctx), this can be removed as the runtime/experiment
-                      will initialize the runtime loop by calling step(ctx, actions=[])
-                      instead.
-
-        Returns:
-            The observations and proprioceptive state.
-        """
-        actions = [] if actions is None else actions
-
-        if first:
-            # Return first observations after 'reset' before any action is applied
-            return self._observations, self._proprioceptive_state
-
-        actions = self.motor_system(ctx, self._observations)
-        self._observations, self._proprioceptive_state = self._step(actions)
-        self.motor_system._state = MotorSystemState(self._proprioceptive_state)
-        return self._observations, self._proprioceptive_state
-
-    def _step(
         self, actions: Sequence[Action]
     ) -> tuple[Observations, ProprioceptiveState]:
         """Take actions in the environment and apply the transform to the observations.
@@ -181,16 +142,12 @@ class EnvironmentInterface:
             The observations and proprioceptive state.
         """
         observations, state = self.env.step(actions)
-        if self.transform is not None:
-            observations = self.apply_transform(self.transform, observations, state)
+        if self.transforms is not None:
+            observations = self.apply_transform(observations, state)
         return observations, state
 
     def pre_episode(self, rng: np.random.RandomState):
-        self.motor_system.pre_episode()
-
-        # Reset the environment interface state.
-        self._observations, self._proprioceptive_state = self.reset(rng)
-        self.motor_system._state = MotorSystemState(self._proprioceptive_state)
+        self.reset(rng)
 
     def post_episode(self):
         pass
@@ -219,17 +176,19 @@ class EnvironmentInterfacePerObject(EnvironmentInterface):
 
     def __init__(
         self,
-        object_names,
-        object_init_sampler,
-        parent_to_child_mapping=None,
+        object_names: list[str] | ListConfig | MultiObjectNames,
+        object_init_sampler: Default | Predefined | RandomRotation,
+        parent_to_child_mapping: Mapping[str, Sequence[str]] | None = None,
+        positioning_procedures: Sequence[PositioningProcedureFactory] | None = None,
         *args,
         **kwargs,
     ):
         """Initialize environment interface.
 
         Args:
-            object_names: list of objects if doing a simple experiment with primary
-                target objects only; dict for experiments with multiple objects,
+            object_names: plain list of objects, or Hydra `ListConfig`, if doing a
+                simple experiment with primary target objects only; mapping typed as
+                `MultiObjectNames` for experiments with multiple objects,
                 corresponding to -->
                 targets_list : the list of primary target objects
                 source_object_list : the original object list from which the primary
@@ -240,19 +199,16 @@ class EnvironmentInterfacePerObject(EnvironmentInterface):
                 and scale of objects when re-initializing.
             parent_to_child_mapping: dictionary mapping parent objects to their child
                 objects. Used for logging.
+            positioning_procedures: Sequence of positioning procedures to apply
+                prior to each episode.
             *args: passed to `super()` call
             **kwargs: passed to `super()` call
 
         Raises:
-            TypeError: If `object_names` is not a list or dictionary
+            TypeError: If `object_names` is not a `list`, `ListConfig`, or a mapping
         """
         super().__init__(*args, **kwargs)
-        if isinstance(object_names, Sequence):
-            self.object_names = object_names
-            # Return an (ordered) list of unique items:
-            self.source_object_list = list(dict.fromkeys(object_names))
-            self.num_distractors = 0
-        elif isinstance(object_names, Mapping):
+        if isinstance(object_names, Mapping):
             # TODO when we want more advanced multi-object experiments, update these
             # arguments along with the Object Initializers so that we can easily
             # specify a set of primary targets and distractors, i.e. random sampling
@@ -262,28 +218,55 @@ class EnvironmentInterfacePerObject(EnvironmentInterface):
                 dict.fromkeys(object_names["source_object_list"])
             )
             self.num_distractors = object_names["num_distractors"]
+        elif isinstance(object_names, (list, ListConfig)):
+            self.object_names = object_names
+            # Return an (ordered) list of unique items:
+            self.source_object_list = list(dict.fromkeys(self.object_names))
+            self.num_distractors = 0
         else:
-            raise TypeError("Object names should be a list or dictionary")
+            raise TypeError("Object names must be a list, ListConfig, or a mapping")
         self.create_semantic_mapping()
 
         self.episodes = 0
         self.epochs = 0
         self.object_init_sampler = object_init_sampler
-        self.object_params = self.object_init_sampler(
+        self.object_params: ObjectInitParams = self.object_init_sampler(
             self.seed, self.experiment_mode, self.epochs, self.episodes
         )
         self.current_object = 0
         self.n_objects = len(self.object_names)
         self.primary_target = None
         self.consistent_child_objects = None
-        self.parent_to_child_mapping = (
-            parent_to_child_mapping if parent_to_child_mapping else {}
-        )
+        self.parent_to_child_mapping = parent_to_child_mapping or {}
+        self._positioning_procedures = positioning_procedures
 
     def pre_episode(self, rng: np.random.RandomState):
         super().pre_episode(rng)
 
-        self.motor_system.motor_only_step = False
+        if self._positioning_procedures is None:
+            return
+
+        assert self.primary_target is not None, "Primary target not set"
+        target_semantic_id = cast("SemanticID", self.primary_target["semantic_id"])
+
+        success = False
+        for factory in self._positioning_procedures:
+            positioning_procedure = factory.create(target_semantic_id)
+            observations, proprioceptive_state = self.step([])
+            result = positioning_procedure(
+                observations, MotorSystemState(proprioceptive_state)
+            )
+            while not result.terminated and not result.truncated:
+                observations, proprioceptive_state = self.step(result.actions)
+                result = positioning_procedure(
+                    observations, MotorSystemState(proprioceptive_state)
+                )
+
+            # We only care about the last result.
+            success = result.success
+
+        if self.num_distractors == 0 and not success:
+            raise RuntimeError("Primary target not visible at start of episode")
 
     def post_episode(self):
         super().post_episode()
@@ -336,7 +319,7 @@ class EnvironmentInterfacePerObject(EnvironmentInterface):
         )
         self.change_object_by_idx(next_object)
 
-    def change_object_by_idx(self, idx):
+    def change_object_by_idx(self, idx: int):
         """Update the primary target object in the scene based on the given index.
 
         The given `idx` is the index of the object in the `self.object_names` list,
@@ -347,26 +330,27 @@ class EnvironmentInterfacePerObject(EnvironmentInterface):
 
         Args:
             idx: Index of the new object and its parameters in object_params
+
+        Raises:
+            IndexError: If idx is outside the range [0, self.n_objects).
         """
-        assert idx <= self.n_objects, "idx must be <= self.n_objects"
+        if not 0 <= idx < self.n_objects:
+            raise IndexError(f"idx must satisfy 0 <= idx < {self.n_objects}, got {idx}")
         self.env.remove_all_objects()
 
-        # Specify config for the primary target object and then add it
-        init_params = self.object_params.copy()
-        init_params.pop("euler_rotation")
-        if "quat_rotation" in init_params:
-            init_params.pop("quat_rotation")
-        init_params["semantic_id"] = self.semantic_label_to_id[self.object_names[idx]]
-
+        semantic_id = self.semantic_label_to_id[self.object_names[idx]]
         # TODO clean this up with its own specific call i.e. Law of Demeter
         primary_target_obj = self.env.add_object(
-            name=self.object_names[idx], **init_params
+            name=self.object_names[idx],
+            position=self.object_params["position"],
+            rotation=self.object_params["rotation"],
+            scale=self.object_params["scale"],
+            semantic_id=semantic_id,
         )
 
         if self.num_distractors > 0:
             self.add_distractor_objects(
                 primary_target_obj,
-                init_params,
                 primary_target_name=self.object_names[idx],
             )
 
@@ -392,17 +376,13 @@ class EnvironmentInterfacePerObject(EnvironmentInterface):
     def add_distractor_objects(
         self,
         primary_target_obj: ObjectID,
-        init_params,
-        primary_target_name,
+        primary_target_name: str,
     ):
         """Add arbitrarily many "distractor" objects to the environment.
 
         Args:
             primary_target_obj : The ID of the object which is the primary target in
                 the scene.
-            init_params: Parameters used to initialize the object, e.g.
-                orientation; for now, these are identical to the primary target
-                except for the object ID.
             primary_target_name: name of the primary target object
         """
         # Sample distractor objects from those that are not the primary target; this
@@ -414,14 +394,14 @@ class EnvironmentInterfacePerObject(EnvironmentInterface):
         ]
 
         for __ in range(self.num_distractors):
-            new_init_params = copy.deepcopy(init_params)
-
             new_obj_label = self.rng.choice(sampling_list)
-            new_init_params["semantic_id"] = self.semantic_label_to_id[new_obj_label]
-            # TODO clean up the `**` unpacking used
+            semantic_id = self.semantic_label_to_id[new_obj_label]
             self.env.add_object(
                 name=new_obj_label,
-                **new_init_params,
+                position=self.object_params["position"],
+                rotation=self.object_params["rotation"],
+                scale=self.object_params["scale"],
+                semantic_id=semantic_id,
                 primary_target_object=primary_target_obj,
             )
 
@@ -582,14 +562,14 @@ class OmniglotEnvironmentInterface(EnvironmentInterfacePerObject):
 
     def __init__(
         self,
-        alphabets,
-        characters,
-        versions,
+        alphabets: Sequence[int],
+        characters: Sequence[int],
+        versions: Sequence[int],
         env: OmniglotEnvironment,
-        motor_system: MotorSystem,
-        rng,
-        transform=None,
-        parent_to_child_mapping=None,
+        rng: np.random.RandomState,
+        transform: Transform | Sequence[Transform] | None = None,
+        parent_to_child_mapping: Mapping[str, Sequence[str]] | None = None,
+        positioning_procedures: Sequence[PositioningProcedureFactory] | None = None,
         *_args,
         **_kwargs,
     ):
@@ -600,29 +580,20 @@ class OmniglotEnvironmentInterface(EnvironmentInterfacePerObject):
             characters: List of characters.
             versions: List of versions.
             env: An instance of a class that implements :class:`OmniglotEnvironment`.
-            motor_system: The motor system.
             rng: Random number generator to use.
             transform: Callable used to transform the observations returned
                  by the environment.
             parent_to_child_mapping: dictionary mapping parent objects to their child
                 objects. Used for logging.
-
+            positioning_procedures: Sequence of positioning procedures to apply
+                prior to each episode.
             *args: Unused?
             **kwargs: Unused?
-
-        Raises:
-            TypeError: If `motor_system` is not an instance of `MotorSystem`.
         """
-        if not isinstance(motor_system, MotorSystem):
-            raise TypeError(
-                f"motor_system must be an instance of MotorSystem, got {motor_system}"
-            )
         self.env = env
         self.rng = rng
-        self.motor_system = motor_system
-        self.transform = transform
-        self._observations, self._proprioceptive_state = self.reset(self.rng)
-        self.motor_system._state = MotorSystemState(self._proprioceptive_state)
+        self.transforms = normalize_transforms(transform)
+        self.reset(self.rng)
 
         self.alphabets = alphabets
         self.characters = characters
@@ -640,6 +611,7 @@ class OmniglotEnvironmentInterface(EnvironmentInterfacePerObject):
         self.parent_to_child_mapping = (
             parent_to_child_mapping if parent_to_child_mapping else {}
         )
+        self._positioning_procedures = positioning_procedures
 
     def post_episode(self):
         self.cycle_object()
@@ -656,13 +628,17 @@ class OmniglotEnvironmentInterface(EnvironmentInterfacePerObject):
         )
         self.change_object_by_idx(next_object)
 
-    def change_object_by_idx(self, idx):
+    def change_object_by_idx(self, idx: int):
         """Update the object in the scene given the idx of it in the object params.
 
         Args:
             idx: Index of the new object and ints parameters in object params
+
+        Raises:
+            IndexError: If idx is outside the range [0, self.n_objects).
         """
-        assert idx <= self.n_objects, "idx must be <= self.n_objects"
+        if not 0 <= idx < self.n_objects:
+            raise IndexError(f"idx must satisfy 0 <= idx < {self.n_objects}, got {idx}")
         self.env.switch_to_object(
             self.alphabets[idx], self.characters[idx], self.versions[idx]
         )
@@ -682,13 +658,13 @@ class SaccadeOnImageEnvironmentInterface(EnvironmentInterfacePerObject):
 
     def __init__(
         self,
-        scenes,
-        versions,
+        scenes: Sequence[int],
+        versions: Sequence[int],
         env: SaccadeOnImageEnvironment,
-        motor_system: MotorSystem,
-        rng,
-        transform=None,
-        parent_to_child_mapping=None,
+        rng: np.random.RandomState,
+        transform: Transform | Sequence[Transform] | None = None,
+        parent_to_child_mapping: Mapping[str, Sequence[str]] | None = None,
+        positioning_procedures: Sequence[PositioningProcedureFactory] | None = None,
         *_args,
         **_kwargs,
     ):
@@ -699,28 +675,20 @@ class SaccadeOnImageEnvironmentInterface(EnvironmentInterfacePerObject):
             versions: List of versions
             env: An instance of a class that implements
                 :class:`SaccadeOnImageEnvironment`.
-            motor_system: The motor system.
             rng: Random number generator to use.
             transform: Callable used to transform the observations returned by
                 the environment.
             parent_to_child_mapping: dictionary mapping parent objects to their child
                 objects. Used for logging.
+            positioning_procedures: Sequence of positioning procedures to apply
+                prior to each episode.
             *args: Unused?
             **kwargs: Unused?
-
-        Raises:
-            TypeError: If `motor_system` is not an instance of `MotorSystem`.
         """
-        if not isinstance(motor_system, MotorSystem):
-            raise TypeError(
-                f"motor_system must be an instance of MotorSystem, got {motor_system}"
-            )
         self.env = env
         self.rng = rng
-        self.motor_system = motor_system
-        self.transform = transform
-        self._observations, self._proprioceptive_state = self.reset(self.rng)
-        self.motor_system._state = MotorSystemState(self._proprioceptive_state)
+        self.transforms = normalize_transforms(transform)
+        self.reset(self.rng)
 
         self.scenes = scenes
         self.versions = versions
@@ -731,9 +699,8 @@ class SaccadeOnImageEnvironmentInterface(EnvironmentInterfacePerObject):
         self.epochs = 0
         self.primary_target = None
         self.consistent_child_objects = None
-        self.parent_to_child_mapping = (
-            parent_to_child_mapping if parent_to_child_mapping else {}
-        )
+        self.parent_to_child_mapping = parent_to_child_mapping or {}
+        self._positioning_procedures = positioning_procedures
 
     def post_episode(self):
         self.cycle_object()
@@ -751,13 +718,19 @@ class SaccadeOnImageEnvironmentInterface(EnvironmentInterfacePerObject):
         )
         self.change_object_by_idx(next_scene)
 
-    def change_object_by_idx(self, idx):
+    def change_object_by_idx(self, idx: int):
         """Update the object in the scene given the idx of it in the object params.
 
         Args:
             idx: Index of the new object and ints parameters in object params
+
+        Raises:
+            IndexError: If idx is outside the range [0, self.n_versions).
         """
-        assert idx <= self.n_versions, "idx must be <= self.n_versions"
+        if not 0 <= idx < self.n_versions:
+            raise IndexError(
+                f"idx must satisfy 0 <= idx < {self.n_versions}, got {idx}"
+            )
         logger.info(
             f"changing to obj {idx} -> scene {self.scenes[idx]}, version "
             f"{self.versions[idx]}"
@@ -784,9 +757,9 @@ class SaccadeOnImageFromStreamEnvironmentInterface(SaccadeOnImageEnvironmentInte
     def __init__(
         self,
         env: SaccadeOnImageFromStreamEnvironment,
-        motor_system: MotorSystem,
-        rng,
-        transform=None,
+        rng: np.random.RandomState,
+        transform: Transform | Sequence[Transform] | None = None,
+        positioning_procedures: Sequence[PositioningProcedureFactory] | None = None,
         *_args,
         **_kwargs,
     ):
@@ -795,30 +768,23 @@ class SaccadeOnImageFromStreamEnvironmentInterface(SaccadeOnImageEnvironmentInte
         Args:
             env: An instance of a class that implements
                 :class:`SaccadeOnImageFromStreamEnvironment`.
-            motor_system: The motor system.
             rng: Random number generator to use.
             transform: Callable used to transform the observations returned by
                 the environment.
+            positioning_procedures: Sequence of positioning procedures to apply
+                prior to each episode.
             *args: Unused?
             **kwargs: Unused?
-
-        Raises:
-            TypeError: If `motor_system` is not an instance of `MotorSystem`.
         """
-        if not isinstance(motor_system, MotorSystem):
-            raise TypeError(
-                f"motor_system must be an instance of MotorSystem, got {motor_system}"
-            )
         self.env = env
         self.rng = rng
-        self.motor_system = motor_system
-        self.transform = transform
-        self._observations, self._proprioceptive_state = self.reset(self.rng)
-        self.motor_system._state = MotorSystemState(self._proprioceptive_state)
+        self.transforms = normalize_transforms(transform)
+        self.reset(self.rng)
         self.current_scene = 0
         self.episodes = 0
         self.epochs = 0
         self.primary_target = None
+        self._positioning_procedures = positioning_procedures
 
     def pre_epoch(self):
         # TODO: Could give a start index as parameter
@@ -838,7 +804,7 @@ class SaccadeOnImageFromStreamEnvironmentInterface(SaccadeOnImageEnvironmentInte
         # TODO: Do we need a separate method for this ?
         self.change_scene_by_idx(next_scene)
 
-    def change_scene_by_idx(self, idx):
+    def change_scene_by_idx(self, idx: int):
         """Update the object in the scene given the idx of it in the object params.
 
         Args:

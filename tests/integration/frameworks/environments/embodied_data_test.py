@@ -13,17 +13,17 @@ import unittest
 from pathlib import Path
 from typing import Sequence
 
-import hydra
 import magnum
 import numpy as np
 import numpy.typing as npt
 import quaternion as qt
+from omegaconf import OmegaConf
 
-from tbp.monty.context import RuntimeContext
 from tbp.monty.frameworks.actions.actions import Action
 from tbp.monty.frameworks.agents import AgentID
 from tbp.monty.frameworks.environments.embodied_data import (
     EnvironmentInterface,
+    EnvironmentInterfacePerObject,
     OmniglotEnvironmentInterface,
     SaccadeOnImageEnvironmentInterface,
     SaccadeOnImageFromStreamEnvironmentInterface,
@@ -31,6 +31,10 @@ from tbp.monty.frameworks.environments.embodied_data import (
 from tbp.monty.frameworks.environments.environment import (
     ObjectID,
     SimulatedObjectEnvironment,
+)
+from tbp.monty.frameworks.environments.object_init_samplers import (
+    Default,
+    MultiObjectNames,
 )
 from tbp.monty.frameworks.environments.two_d_data import (
     SaccadeOnImageEnvironment,
@@ -42,15 +46,11 @@ from tbp.monty.frameworks.models.abstract_monty_classes import (
     Observations,
     SensorObservation,
 )
-from tbp.monty.frameworks.models.motor_policies import BasePolicy
-from tbp.monty.frameworks.models.motor_system import MotorSystem
 from tbp.monty.frameworks.models.motor_system_state import (
     AgentState,
-    MotorSystemState,
     ProprioceptiveState,
 )
 from tbp.monty.frameworks.sensors import SensorID
-from tests import HYDRA_ROOT
 
 AGENT_ID = AgentID("agent_id_0")
 SENSOR_ID = SensorID("sensor_id_0")
@@ -212,34 +212,105 @@ class FakeOmniglotEnvironment(FakeEnvironmentAbs):
         self.alphabet_names = ["name_one", "name_two", "name_three"]
 
 
-class EmbodiedDataTest(unittest.TestCase):
-    def setUp(self) -> None:
-        with hydra.initialize_config_dir(config_dir=str(HYDRA_ROOT), version_base=None):
-            self.policy_cfg_fragment = hydra.compose(
-                config_name="experiment/config/monty/motor_system/defaults"
-            ).experiment.config.monty.motor_system.motor_system_args.policy
-            self.policy_cfg_abs_fragment = hydra.compose(
-                config_name="test/config/monty/motor_system/absolute"
-            ).test.config.monty.motor_system.motor_system_args.policy
+class EnvironmentInterfacePerObjectTest(unittest.TestCase):
+    def test_accepts_plain_list_object_names(self):
+        seed = 42
+        rng = np.random.RandomState(seed)
 
+        env_interface = EnvironmentInterfacePerObject(
+            env=FakeEnvironmentAbs(),
+            rng=rng,
+            seed=seed,
+            experiment_mode=ExperimentMode.EVAL,
+            object_names=["object_a", "object_b", "object_a"],
+            object_init_sampler=Default(),
+        )
+
+        self.assertEqual(
+            ["object_a", "object_b", "object_a"], env_interface.object_names
+        )
+        self.assertEqual(["object_a", "object_b"], env_interface.source_object_list)
+        self.assertEqual(0, env_interface.num_distractors)
+
+    def test_accepts_hydra_list_config_object_names(self):
+        seed = 42
+        rng = np.random.RandomState(seed)
+
+        env_interface = EnvironmentInterfacePerObject(
+            env=FakeEnvironmentAbs(),
+            rng=rng,
+            seed=seed,
+            experiment_mode=ExperimentMode.EVAL,
+            object_names=OmegaConf.create(["object_a", "object_b", "object_a"]),
+            object_init_sampler=Default(),
+        )
+
+        self.assertEqual(
+            ["object_a", "object_b", "object_a"], env_interface.object_names
+        )
+        self.assertEqual(["object_a", "object_b"], env_interface.source_object_list)
+        self.assertEqual(0, env_interface.num_distractors)
+
+    def test_accepts_mapping_object_names(self):
+        seed = 42
+        rng = np.random.RandomState(seed)
+
+        env_interface = EnvironmentInterfacePerObject(
+            env=FakeEnvironmentAbs(),
+            rng=rng,
+            seed=seed,
+            experiment_mode=ExperimentMode.EVAL,
+            object_names=MultiObjectNames(
+                targets_list=["object_a", "object_c"],
+                source_object_list=[
+                    "object_a",
+                    "object_b",
+                    "object_c",
+                    "object_b",
+                ],
+                num_distractors=2,
+            ),
+            object_init_sampler=Default(),
+        )
+
+        self.assertEqual(["object_a", "object_c"], env_interface.object_names)
+        self.assertEqual(
+            ["object_a", "object_b", "object_c"], env_interface.source_object_list
+        )
+        self.assertEqual(2, env_interface.num_distractors)
+
+    def test_rejects_tuple_object_names(self):
+        seed = 42
+        rng = np.random.RandomState(seed)
+
+        with self.assertRaisesRegex(
+            TypeError,
+            "Object names must be a list, ListConfig, or a mapping",
+        ):
+            EnvironmentInterfacePerObject(
+                env=FakeEnvironmentAbs(),
+                rng=rng,
+                seed=seed,
+                experiment_mode=ExperimentMode.EVAL,
+                object_names=("object_a", "object_b"),
+                object_init_sampler=Default(),
+            )
+
+
+class EmbodiedDataTest(unittest.TestCase):
     def test_embodied_env_interface_dist(self):
         seed = 42
         rng = np.random.RandomState(seed)
-        base_policy: BasePolicy = hydra.utils.instantiate(self.policy_cfg_fragment)
-        base_policy.agent_id = AGENT_ID
-        motor_system_dist = MotorSystem(policy=base_policy)
         env = FakeEnvironmentRel()
         env_interface_dist = EnvironmentInterface(
             env,
             rng=rng,
-            motor_system=motor_system_dist,
             seed=seed,
             experiment_mode=ExperimentMode.EVAL,
         )
 
-        ctx = RuntimeContext(rng)
         for i in range(1, NUM_STEPS):
-            obs_dist, _ = env_interface_dist.step(ctx)
+            obs_dist, _ = env_interface_dist.step([])
             print(obs_dist)
             self.assertTrue(
                 np.all(obs_dist[AGENT_ID][SENSOR_ID]["raw"] == EXPECTED_STATES[i])
@@ -249,7 +320,7 @@ class EmbodiedDataTest(unittest.TestCase):
         self.assertTrue(
             np.all(initial_obs[AGENT_ID][SENSOR_ID]["raw"] == EXPECTED_STATES[0])
         )
-        obs_dist, _ = env_interface_dist.step(ctx)
+        obs_dist, _ = env_interface_dist.step([])
         self.assertFalse(
             np.all(
                 obs_dist[AGENT_ID][SENSOR_ID]["raw"]
@@ -261,22 +332,16 @@ class EmbodiedDataTest(unittest.TestCase):
     def test_embodied_env_interface_abs(self):
         seed = 42
         rng = np.random.RandomState(seed)
-        base_policy: BasePolicy = hydra.utils.instantiate(self.policy_cfg_abs_fragment)
-        base_policy.agent_id = AGENT_ID
-
-        motor_system_abs = MotorSystem(policy=base_policy)
         env = FakeEnvironmentAbs()
         env_interface_abs = EnvironmentInterface(
             env,
             rng=rng,
-            motor_system=motor_system_abs,
             seed=seed,
             experiment_mode=ExperimentMode.EVAL,
         )
 
-        ctx = RuntimeContext(rng)
         for i in range(1, NUM_STEPS):
-            obs_abs, _ = env_interface_abs.step(ctx)
+            obs_abs, _ = env_interface_abs.step([])
             self.assertTrue(
                 np.all(obs_abs[AGENT_ID][SENSOR_ID]["raw"] == EXPECTED_STATES[i])
             )
@@ -285,7 +350,7 @@ class EmbodiedDataTest(unittest.TestCase):
         self.assertTrue(
             np.all(initial_state[AGENT_ID][SENSOR_ID]["raw"] == EXPECTED_STATES[0])
         )
-        obs_abs, _ = env_interface_abs.step(ctx)
+        obs_abs, _ = env_interface_abs.step([])
         self.assertFalse(
             np.all(
                 obs_abs[AGENT_ID][SENSOR_ID]["raw"]
@@ -297,23 +362,19 @@ class EmbodiedDataTest(unittest.TestCase):
     def test_embodied_env_interface_dist_states(self):
         seed = 42
         rng = np.random.RandomState(seed)
-        base_policy: BasePolicy = hydra.utils.instantiate(self.policy_cfg_fragment)
-        base_policy.agent_id = AGENT_ID
 
-        motor_system_dist = MotorSystem(policy=base_policy)
         env = FakeEnvironmentRel()
         env_interface_dist = EnvironmentInterface(
             env=env,
             rng=rng,
-            motor_system=motor_system_dist,
             seed=seed,
             experiment_mode=ExperimentMode.EVAL,
         )
 
-        i = 0
-        ctx = RuntimeContext(rng)
+        # Start at 1 because the initial call to reset consumes the zeroth state.
+        i = 1
         while True:
-            obs, _ = env_interface_dist.step(ctx, first=(i == 0))
+            obs, _ = env_interface_dist.step([])
             self.assertTrue(
                 np.all(obs[AGENT_ID][SENSOR_ID]["raw"] == EXPECTED_STATES[i])
             )
@@ -327,23 +388,18 @@ class EmbodiedDataTest(unittest.TestCase):
         seed = 42
         rng = np.random.RandomState(seed)
 
-        base_policy: BasePolicy = hydra.utils.instantiate(self.policy_cfg_abs_fragment)
-        base_policy.agent_id = AGENT_ID
-
-        motor_system_abs = MotorSystem(policy=base_policy)
         env = FakeEnvironmentAbs()
         env_interface_abs = EnvironmentInterface(
             env=env,
             rng=rng,
-            motor_system=motor_system_abs,
             seed=seed,
             experiment_mode=ExperimentMode.EVAL,
         )
 
-        i = 0
-        ctx = RuntimeContext(rng)
+        # Start at 1 because the initial call to reset consumes the zeroth state.
+        i = 1
         while True:
-            obs, _ = env_interface_abs.step(ctx, first=(i == 0))
+            obs, _ = env_interface_abs.step([])
             self.assertTrue(
                 np.all(obs[AGENT_ID][SENSOR_ID]["raw"] == EXPECTED_STATES[i])
             )
@@ -382,11 +438,6 @@ class EmbodiedDataTest(unittest.TestCase):
     def test_omniglot_data_loader(self):
         rng = np.random.RandomState(42)
 
-        base_policy: BasePolicy = hydra.utils.instantiate(self.policy_cfg_abs_fragment)
-        base_policy.agent_id = AGENT_ID
-
-        motor_system_abs = MotorSystem(policy=base_policy)
-
         alphabets = [0, 0, 0, 1, 1, 1]
         characters = [1, 2, 3, 1, 2, 3]
         versions = [1, 1, 1, 1, 1, 1]
@@ -396,7 +447,6 @@ class EmbodiedDataTest(unittest.TestCase):
         omniglot_data_loader_abs = OmniglotEnvironmentInterface(
             env=env,  # TODO: FakeOmniglotEnvironment is not an OmniglotEnvironment
             rng=rng,
-            motor_system=motor_system_abs,
             alphabets=alphabets,
             characters=characters,
             versions=versions,
@@ -412,35 +462,28 @@ class EmbodiedDataTest(unittest.TestCase):
 
     def test_saccade_on_image_env_interface(self):
         rng = np.random.RandomState(42)
-        ctx = RuntimeContext(rng)
         sensor_id = SensorID("patch")
         patch_size = 48
         expected_keys = ["depth", "rgba", "pixel_loc"]
 
         data_path = TEST_DATALOADER_PATH
 
-        base_policy: BasePolicy = hydra.utils.instantiate(self.policy_cfg_fragment)
-        base_policy.agent_id = AGENT_ID
-
-        motor_system_rel = MotorSystem(policy=base_policy, state=MotorSystemState())
-
         env_init_args = {"patch_size": patch_size, "data_path": data_path}
         env = SaccadeOnImageEnvironment(**env_init_args)
         env_interface_rel = SaccadeOnImageEnvironmentInterface(
             env=env,
             rng=rng,
-            motor_system=motor_system_rel,
             scenes=[0, 0],
             versions=[0, 1],
         )
         env_interface_rel.pre_episode(rng)
-        initial_state, _ = env_interface_rel.step(ctx)
+        initial_state, _ = env_interface_rel.step([])
         sensed_data = initial_state[AGENT_ID][sensor_id]
         self.check_two_d_patch_obs(sensed_data, patch_size, expected_keys)
 
         i = 0
         while True:
-            obs, _ = env_interface_rel.step(ctx)
+            obs, _ = env_interface_rel.step([])
             sensed_data = obs[AGENT_ID][sensor_id]
             self.check_two_d_patch_obs(sensed_data, patch_size, expected_keys)
             if i >= NUM_STEPS - 1:
@@ -457,7 +500,7 @@ class EmbodiedDataTest(unittest.TestCase):
         env_interface_rel.pre_episode(rng)
         i = 0
         while True:
-            obs, _ = env_interface_rel.step(ctx)
+            obs, _ = env_interface_rel.step([])
             sensed_data = obs[AGENT_ID][sensor_id]
             self.check_two_d_patch_obs(sensed_data, patch_size, expected_keys)
             if i >= NUM_STEPS - 1:
@@ -467,31 +510,25 @@ class EmbodiedDataTest(unittest.TestCase):
 
     def test_saccade_on_image_stream_env_interface(self):
         rng = np.random.RandomState(42)
-        ctx = RuntimeContext(rng)
         sensor_id = SensorID("patch")
         patch_size = 48
         expected_keys = ["depth", "rgba", "pixel_loc"]
 
         data_path = TEST_DATALOADER_PATH / "0_numenta_mug"
 
-        base_policy: BasePolicy = hydra.utils.instantiate(self.policy_cfg_fragment)
-        base_policy.agent_id = AGENT_ID
-
-        motor_system_rel = MotorSystem(policy=base_policy)
-
         env_init_args = {"patch_size": patch_size, "data_path": data_path}
         env = SaccadeOnImageFromStreamEnvironment(**env_init_args)
         env_interface_rel = SaccadeOnImageFromStreamEnvironmentInterface(
-            env=env, rng=rng, motor_system=motor_system_rel
+            env=env, rng=rng
         )
         env_interface_rel.pre_episode(rng)
-        initial_state, _ = env_interface_rel.step(ctx)
+        initial_state, _ = env_interface_rel.step([])
         sensed_data = initial_state[AGENT_ID][sensor_id]
         self.check_two_d_patch_obs(sensed_data, patch_size, expected_keys)
 
         i = 0
         while True:
-            obs, _ = env_interface_rel.step(ctx)
+            obs, _ = env_interface_rel.step([])
             sensed_data = obs[AGENT_ID][sensor_id]
             self.check_two_d_patch_obs(sensed_data, patch_size, expected_keys)
             if i >= NUM_STEPS - 1:
@@ -507,14 +544,10 @@ class EmbodiedDataTest(unittest.TestCase):
         )
         i = 0
         while True:
-            obs, _ = env_interface_rel.step(ctx)
+            obs, _ = env_interface_rel.step([])
             sensed_data = obs[AGENT_ID][sensor_id]
             self.check_two_d_patch_obs(sensed_data, patch_size, expected_keys)
             if i >= NUM_STEPS - 1:
                 break
 
             i += 1
-
-
-if __name__ == "__main__":
-    unittest.main()

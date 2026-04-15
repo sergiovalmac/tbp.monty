@@ -583,10 +583,12 @@ class DetailedGraphMatchingLogger(BasicGraphMatchingLogger):
 
         # Some motor systems store additional data specific to their policy, e.g. when
         # principal curvature has informed movements
-        if hasattr(model.motor_system._policy, "action_details"):
-            buffer_data["motor_system"]["action_details"] = (
-                model.motor_system._policy.action_details
-            )
+        buffer_data["motor_system"]["action_details"] = dict(
+            model.motor_system._telemetry_surface_action_details.__dict__
+        )
+        buffer_data["motor_system"]["policy_selector"] = {
+            "selected_goals": model.motor_system._policy_selector._selected_goals,
+        }
 
         self.data["DETAILED"][episodes] = buffer_data
 
