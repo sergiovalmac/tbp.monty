@@ -1,11 +1,11 @@
 config:
-  do_train: false
-  do_eval: true
+  do_train: train
+  do_eval: false
   show_sensor_output: true
-  max_train_steps: 1000
+  max_train_steps: 50
   max_eval_steps: 500
-  max_total_steps: 6000
-  n_train_epochs: 3
+  max_total_steps: 100
+  n_train_epochs: 1
   n_eval_epochs: 1
   model_name_or_path: ${benchmarks.pretrained_dir}/surf_agent_1lm_10distinctobj/pretrained/
   min_lms_match: 1
@@ -135,7 +135,7 @@ config:
         - -0.1
       scene_id: null
       seed: 42
-      data_path: ${path.expanduser:${oc.env:MONTY_DATA}/mujoco/objects/ycb}
+      data_path: ${path.expanduser:${oc.env:MONTY_DATA}/habitat/objects/ycb}
       agents:
         agent_args:
           agent_id: ${monty.agent_id:agent_id_0}
@@ -173,10 +173,18 @@ config:
       - 1.0
       get_all_points: true
       use_semantic_sensor: false
+  train_env_interface_class: ${monty.class:tbp.monty.frameworks.environments.embodied_data.InformedEnvironmentInterface}
+  train_env_interface_args:
+    object_names:
+      - sphere
+    object_init_sampler:
+      _target_: tbp.monty.frameworks.environments.object_init_samplers.Predefined
+      rotations: [[0.0,0.0,0.0]]
+      scales: [[0.03,0.03,0.03]]
   eval_env_interface_args:
     parent_to_child_mapping: null
     object_names:
-    - mug
+    - sphere
     # - bowl
     # - potted_meat_can
     # - spoon

@@ -8,5 +8,6 @@
 # https://opensource.org/licenses/MIT.
 
 from .agents import *
+from .robot_agents import *
 from .environment import *
 from .simulator import *

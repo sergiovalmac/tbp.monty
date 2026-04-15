@@ -139,8 +139,15 @@ config:
         agent_args:
           agent_id: ${monty.agent_id:agent_id_0}
           position: [0.0, 0.0, 0.0]
+          rotation: [1.0, 0.0, 0.0, 0.0]
           robot_name: "robot:ur5e"
           ee_site_name: attachment_site
+          home_qpos: [0.0, -1.570796, 1.570796, -1.570796, -1.570796, 0.0]
+          ik_method: "damped_ls"
+          ik_args:
+            max_iter: 500
+            tol: 0.0001
+            damping: 0.05
           sensor_configs:
             patch:
               position: [0.0, 0.0, 0.0]
@@ -182,7 +189,7 @@ config:
       - sphere
     object_init_sampler:
       _target_: tbp.monty.frameworks.environments.object_init_samplers.Predefined
-      positions: [[-0.817, -0.35, 0.063]]
+      positions: [[-0.492, -0.134, 0.388]]
       rotations: [[0.0,0.0,0.0]]
       scales: [[0.03,0.03,0.03]]
   eval_env_interface_args:
