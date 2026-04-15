@@ -7,7 +7,7 @@ config:
   max_total_steps: 6000
   n_train_epochs: 3
   n_eval_epochs: 5
-  model_name_or_path: ${benchmarks.pretrained_dir}/surf_agent_1lm_10distinctobj/pretrained/
+  model_name_or_path: ${constants.pretrained_dir}/surf_agent_1lm_10distinctobj/pretrained/
   min_lms_match: 1
   seed: 42
   supervised_lm_ids: []
@@ -30,23 +30,24 @@ config:
     wandb_group: benchmark_experiments
   monty_config:
     motor_system_config:
-      motor_system_args:
+      _target_: tbp.monty.frameworks.models.motor_system.MotorSystem
+      policy_selector:
+        _target_: tbp.monty.frameworks.models.motor_policy_selectors.SinglePolicySelector
         policy:
-          use_goal_state_driven_actions: true
-          agent_id: ${monty.agent_id:agent_id_0}
+          _target_: tbp.monty.frameworks.models.motor_policies.InformedPolicy
+          use_goal_driven_actions: true
+          agent_id: agent_id_0
           action_sampler:
+            _target_: tbp.monty.frameworks.actions.action_samplers.ConstantSampler
             actions:
             - ${monty.class:tbp.monty.frameworks.actions.actions.LookUp}
             - ${monty.class:tbp.monty.frameworks.actions.actions.LookDown}
             - ${monty.class:tbp.monty.frameworks.actions.actions.TurnLeft}
             - ${monty.class:tbp.monty.frameworks.actions.actions.TurnRight}
-            _target_: tbp.monty.frameworks.actions.action_samplers.ConstantSampler
             rotation_degrees: 5.0
-          _target_: tbp.monty.frameworks.models.motor_policies.InformedPolicy
-      motor_system_class: ${monty.class:tbp.monty.frameworks.models.motor_system.MotorSystem}
     monty_args:
       num_exploratory_steps: 1000
-      min_eval_steps: ${benchmarks.min_eval_steps}
+      min_eval_steps: ${constants.min_eval_steps}
       min_train_steps: 3
       max_total_steps: 2500
     monty_class: ${monty.class:tbp.monty.frameworks.models.evidence_matching.model.MontyForEvidenceGraphMatching}
@@ -68,7 +69,7 @@ config:
           max_graph_size: 0.3
           num_model_voxels_per_dim: 100
           gsg:
-            _target_: tbp.monty.frameworks.models.goal_state_generation.EvidenceGoalStateGenerator
+            _target_: tbp.monty.frameworks.models.goal_generation.EvidenceGoalGenerator
             goal_tolerances:
               location: 0.015
             elapsed_steps_factor: 10
@@ -110,13 +111,13 @@ config:
           sensor_module_id: view_finder
           save_raw_obs: false
     sm_to_agent_dict:
-      patch: ${monty.agent_id:agent_id_0}
-      view_finder: ${monty.agent_id:agent_id_0}
+      patch: agent_id_0
+      view_finder: agent_id_0
     sm_to_lm_matrix:
     - - 0
     lm_to_lm_matrix: null
     lm_to_lm_vote_matrix: null
-  env_interface_config:
+  environment:
     env_init_args:
       objects:
       - name: coneSolid
@@ -129,7 +130,7 @@ config:
       data_path: ${path.expanduser:${oc.env:MONTY_DATA}/mujoco/objects/ycb}
       agents:
         agent_args:
-          agent_id: ${monty.agent_id:agent_id_0}
+          agent_id: agent_id_0
           position: [0.0, 1.5, 0.2]
           sensor_configs:
             patch:
@@ -146,10 +147,10 @@ config:
     env_init_func: ${monty.class:tbp.monty.simulators.mujoco.MuJoCoEnvironment}
     transform:
     - _target_: tbp.monty.frameworks.environment_utils.transforms.MissingToMaxDepth
-      agent_id: ${monty.agent_id:agent_id_0}
+      agent_id: agent_id_0
       max_depth: 1
     - _target_: tbp.monty.frameworks.environment_utils.transforms.DepthTo3DLocations
-      agent_id: ${monty.agent_id:agent_id_0}
+      agent_id: agent_id_0
       sensor_ids:
       - patch
       - view_finder
@@ -165,6 +166,15 @@ config:
       get_all_points: true
       use_semantic_sensor: false
   eval_env_interface_args:
+    positioning_procedures:
+    - _target_: tbp.monty.frameworks.environments.positioning_procedures.GetGoodViewFactory
+      agent_id: agent_id_0
+      sensor_id: view_finder
+    - _target_: tbp.monty.frameworks.environments.positioning_procedures.GetGoodViewFactory
+      agent_id: agent_id_0
+      sensor_id: patch
+      allow_translation: false
+      max_orientation_attempts: 3
     parent_to_child_mapping: null
     object_names:
     - mug
@@ -179,6 +189,6 @@ config:
     - banana
     object_init_sampler:
       _target_: tbp.monty.frameworks.environments.object_init_samplers.Predefined
-      rotations: ${benchmarks.rotations_all}
-  eval_env_interface_class: ${monty.class:tbp.monty.frameworks.environments.embodied_data.InformedEnvironmentInterface}
+      rotations: ${constants.rotations_all}
+  eval_env_interface_class: ${monty.class:tbp.monty.frameworks.environments.embodied_data.EnvironmentInterfacePerObject}
 _target_: tbp.monty.frameworks.experiments.object_recognition_experiments.MontyObjectRecognitionExperiment
