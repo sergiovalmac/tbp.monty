@@ -849,7 +849,7 @@ def target_data_to_dict(target):
     """
     output_dict = {}
     output_dict["primary_target_object"] = target["object"]
-    output_dict["primary_target_position"] = target["position"]
+    output_dict["primary_target_position"] = list(target["position"])
     output_dict["primary_target_rotation_euler"] = list(target["euler_rotation"])
     output_dict["primary_target_rotation_quat"] = np.array(target["rotation"])
     # Currently scale is applied uniformly along all dimensions
@@ -965,10 +965,18 @@ def format_columns_for_wandb(lm_dict):
     Returns:
         formatted lm_dict
     """
+    from omegaconf import DictConfig, ListConfig, OmegaConf
+
     formatted_dict = copy.deepcopy(lm_dict)
     if "result" in formatted_dict and isinstance(formatted_dict["result"], list):
         new_result = "^".join(formatted_dict["result"])
         formatted_dict["result"] = new_result
+
+    # Convert OmegaConf containers to native Python types so wandb can
+    # JSON-serialize them.
+    for key, value in formatted_dict.items():
+        if isinstance(value, (ListConfig, DictConfig)):
+            formatted_dict[key] = OmegaConf.to_container(value, resolve=True)
 
     return formatted_dict
 
