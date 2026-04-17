@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from json import JSONDecoder, JSONEncoder
-from typing import TYPE_CHECKING, Any, Generator
+from typing import TYPE_CHECKING, Any, Generator, TypeVar
 
 from numpy.random import RandomState
 from pydantic.alias_generators import to_snake
