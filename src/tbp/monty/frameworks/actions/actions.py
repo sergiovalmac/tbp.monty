@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from json import JSONDecoder, JSONEncoder
-from typing import Any, Generator, TypeVar
+from typing import TYPE_CHECKING, Any, Generator
 
 from numpy.random import RandomState
 from pydantic.alias_generators import to_snake
@@ -20,8 +20,9 @@ from typing_extensions import (
     runtime_checkable,  # For JSONEncoder instance checks
 )
 
-from tbp.monty.frameworks.agents import AgentID
-from tbp.monty.math import QuaternionWXYZ, VectorXYZ
+if TYPE_CHECKING:
+    from tbp.monty.frameworks.agents import AgentID
+    from tbp.monty.math import QuaternionWXYZ, VectorXYZ
 
 __all__ = [
     # Actions
@@ -117,8 +118,6 @@ class Action(Protocol):
             if key == "name":
                 continue
             yield key, value
-
-    def act(self, actuator: ACTUATOR) -> None: ...
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(agent_id={self.agent_id})"

@@ -1,4 +1,4 @@
-# Copyright 2025 Thousand Brains Project
+# Copyright 2025-2026 Thousand Brains Project
 #
 # Copyright may exist in Contributors' modifications
 # and/or contributions to the work.
@@ -7,7 +7,7 @@
 # license that can be found in the LICENSE file or at
 # https://opensource.org/licenses/MIT.
 
-from .agents import *
-from .robot_agents import *
-from .environment import *
-from .simulator import *
+# Import this to make specifying the simulator in configs less repetitive
+from .simulator import MuJoCoSimulator
+
+__all__ = ["MuJoCoSimulator"]
