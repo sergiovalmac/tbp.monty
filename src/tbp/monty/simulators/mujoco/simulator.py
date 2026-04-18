@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Sequence
 
+from mujoco.viewer import launch_passive
 from mujoco import (
     MjData,
     MjModel,
@@ -34,6 +35,7 @@ from tbp.monty.frameworks.environments.environment import (
     SimulatedObjectEnvironment,
 )
 from tbp.monty.frameworks.models.abstract_monty_classes import Observations
+from tbp.monty.simulators.mujoco.object_builders import YCBObjectBuilder
 from tbp.monty.frameworks.models.motor_system_state import ProprioceptiveState
 from tbp.monty.frameworks.sensors import Resolution2D
 from tbp.monty.math import IDENTITY_QUATERNION, ZERO_VECTOR, QuaternionWXYZ, VectorXYZ
@@ -97,6 +99,7 @@ class MuJoCoSimulator(SimulatedObjectEnvironment):
         agents: Sequence[MuJoCoAgentFactory] | None = None,
         data_path: str | Path | None = None,
         raise_actuate_missing: bool = True,
+        show_viewer: bool = False,
     ) -> None:
         """Constructs a MuJoCo simulated environment.
 
@@ -111,10 +114,14 @@ class MuJoCoSimulator(SimulatedObjectEnvironment):
         if agents is None:
             agents: Sequence[MuJoCoAgentFactory] = []
 
+        self._show_viewer = show_viewer
+        self._viewer = None
+
         self.spec = MjSpec()
         self.model: MjModel = self.spec.compile()
         self.data = MjData(self.model)
         self.data_path = Path(data_path) if data_path else None
+        self._ycb_builder = YCBObjectBuilder(self.data_path) if self.data_path else None
         self._raise_actuate_missing = raise_actuate_missing
 
         self._agent_partials = agents
@@ -146,6 +153,23 @@ class MuJoCoSimulator(SimulatedObjectEnvironment):
         self._create_renderer()
         # Step the simulation so all objects are in their initial positions.
         mj_forward(self.model, self.data)
+        self._reopen_viewer()
+
+    def _reopen_viewer(self) -> None:
+        """Reopen the viewer after model recompilation."""
+        if not self._show_viewer:
+            return
+        if self._viewer is not None and self._viewer.is_running():
+            self._viewer.close()
+        self._viewer = launch_passive(self.model, self.data)
+        self._viewer.sync()
+
+    def _sync_viewer(self) -> None:
+        """Sync the viewer to reflect the current data state."""
+        if not self._show_viewer:
+            return
+        if self._viewer is not None and self._viewer.is_running():
+            self._viewer.sync()
 
     def _create_renderer(self) -> None:
         """Create a new MuJoCo renderer, closing the existing one if needed."""
@@ -202,15 +226,13 @@ class MuJoCoSimulator(SimulatedObjectEnvironment):
 
         if name in PRIMITIVE_OBJECTS:
             self._add_primitive_object(obj_name, name, position, rotation, scale)
+        elif self._ycb_builder is not None and self._ycb_builder.is_object(name):
+            self._ycb_builder.add_to_spec(
+                self.spec, self._object_count, position, rotation, scale, name,
+            )
         else:
             self._add_custom_object(obj_name, name, position, rotation, scale)
         self._object_count += 1
-
-        # Robot builders replace the spec via from_file, wiping any existing
-        # bodies (including agents).  Re-create agents so their spec-level
-        # joints are valid before recompile.
-        if isinstance(builder, RobotDescriptionBuilder) and self._agent_configs:
-            self._create_agents()
 
         self._recompile()
 
@@ -394,15 +416,20 @@ class MuJoCoSimulator(SimulatedObjectEnvironment):
                     continue
                 raise
         mj_forward(self.model, self.data)
+        self._sync_viewer()
         return self.observations, self.states
 
     def reset(self) -> tuple[Observations, ProprioceptiveState]:
         for agent in self._agents.values():
             agent.reset()
         mj_forward(self.model, self.data)
+        self._sync_viewer()
         return self.observations, self.states
 
     def close(self) -> None:
+        if self._viewer is not None and self._viewer.is_running():
+            self._viewer.close()
+        self._viewer = None
         if self.renderer:
             self.renderer.close()
         self.renderer = None

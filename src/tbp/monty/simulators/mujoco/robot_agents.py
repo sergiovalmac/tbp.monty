@@ -31,7 +31,8 @@ from tbp.monty.frameworks.utils.transform_utils import (
     rotation_from_quat,
 )
 from tbp.monty.math import QuaternionWXYZ, VectorXYZ
-from tbp.monty.simulators.mujoco.agents import AgentBase, SensorConfig
+from tbp.monty.frameworks.sensors import SensorConfig
+from tbp.monty.simulators.mujoco.agents import Embodiment
 from tbp.monty.simulators.mujoco.inverse_kinematics import (
     ik_solve_damped_ls,
     ik_solve_incremental,
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class RobotAgentBase(AgentBase):
+class RobotAgentBase(Embodiment):
     """Base class for robot-controlled agents using inverse kinematics.
 
     Attaches cameras to a "virtual" body that tracks the robot's
@@ -142,7 +143,7 @@ class RobotAgentBase(AgentBase):
 
         # Remove keyframes — their qpos sizes are for the original model and
         # become invalid once additional bodies (e.g. agents) are added.
-        for key in list(simulator.spec.key):
+        for key in list(simulator.spec.keys):
             key.delete()
 
     # ------------------------------------------------------------------

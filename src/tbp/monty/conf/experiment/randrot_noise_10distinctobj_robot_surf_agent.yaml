@@ -42,30 +42,30 @@ experiment:
         seed: 42
         data_path: ${path.expanduser:${oc.env:MONTY_DATA}/habitat/objects/ycb}
         agents:
-          agent_args:
-            agent_id: agent_id_0
-            position: [0.0, 0.0, 0.0]
-            rotation: [1.0, 0.0, 0.0, 0.0]
-            robot_name: "robot:ur5e"
-            ee_site_name: attachment_site
-            home_qpos: [0.0, -1.570796, 1.570796, -1.570796, -1.570796, 0.0]
-            ik_method: "damped_ls"
-            ik_args:
-              max_iter: 500
-              tol: 0.0001
-              damping: 0.05
-            sensor_configs:
-              patch:
-                position: [0.0, 0.0, 0.0]
-                rotation: [1.0, 0.0, 0.0, 0.0]
-                resolution: [64, 64]
-                zoom: 10.0
-              view_finder:
-                position: [0.0, 0.0, 0.0]
-                rotation: [1.0, 0.0, 0.0, 0.0]
-                resolution: [256, 256]
-                zoom: 1.0
-          agent_type: ${monty.class:tbp.monty.simulators.mujoco.RobotSurfaceAgent}
+          _target_: tbp.monty.simulators.mujoco.RobotSurfaceAgent
+          _partial_: true
+          agent_id: agent_id_0
+          position: [0.0, 0.0, 0.0]
+          rotation: [1.0, 0.0, 0.0, 0.0]
+          robot_name: "robot:ur5e"
+          ee_site_name: attachment_site
+          home_qpos: [0.0, -1.570796, 1.570796, -1.570796, -1.570796, 0.0]
+          ik_method: "damped_ls"
+          ik_args:
+            max_iter: 500
+            tol: 0.0001
+            damping: 0.05
+          sensor_configs:
+            patch:
+              position: [0.0, 0.0, 0.0]
+              rotation: [1.0, 0.0, 0.0, 0.0]
+              resolution: [64, 64]
+              zoom: 10.0
+            view_finder:
+              position: [0.0, 0.0, 0.0]
+              rotation: [1.0, 0.0, 0.0, 0.0]
+              resolution: [64, 64]
+              zoom: 1.0
       env_init_func: ${monty.class:tbp.monty.simulators.mujoco.MuJoCoEnvironment}
     train_env_interface_class: ${monty.class:tbp.monty.frameworks.environments.embodied_data.EnvironmentInterfacePerObject}
     train_env_interface_args:

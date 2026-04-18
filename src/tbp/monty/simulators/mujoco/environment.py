@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 import quaternion as qt
 
@@ -22,7 +22,6 @@ from tbp.monty.frameworks.environments.environment import (
 from tbp.monty.frameworks.models.abstract_monty_classes import Observations
 from tbp.monty.frameworks.models.motor_system_state import ProprioceptiveState
 from tbp.monty.math import QuaternionWXYZ, VectorXYZ
-from tbp.monty.simulators.mujoco import AgentConfig
 from tbp.monty.simulators.mujoco.simulator import MuJoCoSimulator
 
 if TYPE_CHECKING:
@@ -32,7 +31,7 @@ if TYPE_CHECKING:
 class MuJoCoEnvironment(SimulatedObjectEnvironment):
     def __init__(
         self,
-        agents: AgentConfig,
+        agents: Callable,
         data_path: PathLike,
         show_viewer: bool = False,
         **kwargs,
