@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -139,12 +140,12 @@ class RobotAgentBase(Embodiment):
                 f"package."
             ) from e
 
-        simulator.spec.from_file(str(mod.MJCF_PATH))
+        simulator.spec = mujoco.MjSpec.from_file(str(mod.MJCF_PATH))
 
         # Remove keyframes — their qpos sizes are for the original model and
         # become invalid once additional bodies (e.g. agents) are added.
         for key in list(simulator.spec.keys):
-            key.delete()
+            simulator.spec.delete(key)
 
     # ------------------------------------------------------------------
     # Lazy robot discovery
@@ -296,6 +297,37 @@ class RobotAgentBase(Embodiment):
             free_joint_rot = camera_rot * pitch_rot.inv()
             self.rotation = rotation_as_quat(free_joint_rot)
 
+    def _move_along_local_axis(self, distance: float, axis: int) -> None:
+        """Translate ``self.position`` along a local body axis.
+
+        Args:
+            distance: Signed distance to move (metres).
+            axis: Local axis index (0=x, 1=y, 2=z).
+        """
+        direction = np.zeros(3)
+        direction[axis] = distance
+        agent_rot = rotation_from_quat(self.rotation)
+        world_delta = agent_rot.apply(direction)
+        self.position = tuple(np.array(self.position) + world_delta)
+
+    def _actuate_yaw(self, degrees: float) -> None:
+        """Rotate ``self.rotation`` about the agent body's local Y (up) axis.
+
+        Positive ``degrees`` rotates left, mirroring the convention used by
+        :class:`DistantAgent` actions.
+        """
+        delta = Rotation.from_euler("y", np.deg2rad(degrees))
+        current = rotation_from_quat(self.rotation)
+        self.rotation = rotation_as_quat(current * delta)
+
+    def _actuate_pitch(self, degrees: float) -> None:
+        """Increment the pitch hinge joint by ``degrees``.
+
+        Positive ``degrees`` tilts the camera up (matches LookUp semantics).
+        """
+        pitch_addr = self.sim.model.jnt_qposadr[self.pitch_joint.id]
+        self.sim.data.qpos[pitch_addr] += np.deg2rad(degrees)
+
     def _solve_and_sync(self) -> None:
         """IK-solve for the desired EE pose.
 
@@ -304,8 +336,6 @@ class RobotAgentBase(Embodiment):
         pass is run so that subsequent sensor renders reflect the new joint
         configuration.
         """
-        import mujoco
-
         target_pos, target_mat = self._get_desired_ee_pose()
         self._ik_solve(target_pos, target_mat)
         mujoco.mj_forward(self.sim.model, self.sim.data)

@@ -16,7 +16,7 @@ defaults:
 experiment:
   _target_: tbp.monty.frameworks.experiments.object_recognition_experiments.MontyObjectRecognitionExperiment
   config:
-    show_sensor_output: false
+    show_sensor_output: true
     do_train: true
     max_train_steps: 1000
     max_eval_steps: 500
@@ -32,6 +32,7 @@ experiment:
       run_name: randrot_noise_10distinctobj_robot_dist_agent
     environment:
       env_init_args:
+        show_viewer: true
         objects:
         - name: coneSolid
           position:
@@ -113,7 +114,7 @@ experiment:
         _target_: tbp.monty.frameworks.environments.object_init_samplers.Predefined
         positions: [[-0.492, -0.134, 0.388]]
         rotations: [[0.0, 0.0, 0.0]]
-        scales: [[0.03, 0.03, 0.03]]
+        scales: [[1.0, 1.0, 1.0]]
     eval_env_interface_args:
       object_names:
       - mug
@@ -129,4 +130,4 @@ experiment:
       object_init_sampler:
         _target_: tbp.monty.frameworks.environments.object_init_samplers.RandomRotation
         position: [-0.492, -0.134, 0.388]
-        scale: [0.03, 0.03, 0.03]
+        scale: [1.0, 1.0, 1.0]

@@ -303,6 +303,40 @@ class YCBObjectBuilder(ObjectBuilderBase):
         self.ycb_path = ycb_path
         self.cache_dir = Path.home() / ".cache" / "tbp" / "mujoco_meshes"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._name_cache: dict[str, str] = {}
+
+    def _resolve_name(self, name: str) -> str | None:
+        """Resolve a possibly-short YCB name to an actual mesh directory name.
+
+        YCB mesh directories use prefixed names like ``025_mug``. Experiment
+        configs commonly refer to objects by their short name (``mug``). This
+        method matches either an exact directory name or one ending in
+        ``_<name>``. Habitat performs an equivalent substring lookup via its
+        template manager.
+
+        Args:
+            name: Short or full YCB object name.
+
+        Returns:
+            The matching directory name under ``meshes/``, or ``None`` if no
+            match exists.
+        """
+        if name in self._name_cache:
+            return self._name_cache[name]
+        meshes_dir = self.ycb_path / "meshes"
+        if not meshes_dir.exists():
+            return None
+        if (meshes_dir / name).exists():
+            self._name_cache[name] = name
+            return name
+        # Match a directory whose name ends with the short name preceded by a
+        # ``_`` or ``-`` separator (e.g. ``025_mug`` or ``073-c_lego_duplo``).
+        suffixes = (f"_{name}", f"-{name}")
+        for child in sorted(meshes_dir.iterdir()):
+            if child.is_dir() and child.name.endswith(suffixes):
+                self._name_cache[name] = child.name
+                return child.name
+        return None
 
     def is_object(self, name: str | Path) -> bool:
         """Check if the given name refers to a YCB object.
@@ -315,8 +349,7 @@ class YCBObjectBuilder(ObjectBuilderBase):
         """
         if not isinstance(name, str):
             return False
-        ycb_mesh_path = self.ycb_path / "meshes" / name
-        return ycb_mesh_path.exists()
+        return self._resolve_name(name) is not None
 
     def add_to_spec(
         self,
@@ -346,7 +379,12 @@ class YCBObjectBuilder(ObjectBuilderBase):
             FileNotFoundError: If the mesh file cannot be found
         """
         assert isinstance(name, str), "YCB object name must be a string"
-        mesh_file = self._find_mesh_file(name)
+        resolved = self._resolve_name(name)
+        if resolved is None:
+            raise FileNotFoundError(
+                f"YCB object {name!r} not found under {self.ycb_path / 'meshes'}"
+            )
+        mesh_file = self._find_mesh_file(resolved)
         obj_name = f"{name}_{object_count}"
         obj_file, texture_file = self._convert_glb_to_obj(mesh_file, obj_name)
 
