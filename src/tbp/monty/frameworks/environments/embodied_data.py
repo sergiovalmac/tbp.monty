@@ -266,6 +266,27 @@ class EnvironmentInterfacePerObject(EnvironmentInterface):
             success = result.success
 
         if self.num_distractors == 0 and not success:
+            try:
+                obs0 = observations[next(iter(observations))]
+                sensor_id = next(iter(obs0))
+                sem3d = obs0[sensor_id]["semantic_3d"]
+                depth_shape = obs0[sensor_id]["depth"].shape[:2]
+                sem = sem3d[:, 3].reshape(depth_shape).astype(int)
+                target_id = self.primary_target.get("semantic_id")
+                target_name = self.primary_target.get("object")
+                logger.error(
+                    "POSITIONING FAIL epoch=%s episode=%s object=%s target_sem=%s "
+                    "epoch_obj_idx=%s sensor=%s sem_unique=%s "
+                    "target_pix=%s any_obj_pix=%s center_sem=%s",
+                    self.epochs, self.episodes, target_name, target_id,
+                    self.current_object, sensor_id,
+                    np.unique(sem).tolist(),
+                    int((sem == target_id).sum()),
+                    int((sem > 0).sum()),
+                    int(sem[depth_shape[0] // 2, depth_shape[1] // 2]),
+                )
+            except Exception as exc:
+                logger.error("POSITIONING FAIL diag failed: %s", exc)
             raise RuntimeError("Primary target not visible at start of episode")
 
     def post_episode(self):

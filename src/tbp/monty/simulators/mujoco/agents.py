@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 import numpy as np
 import quaternion as qt
+import mujoco
 from mujoco import MjsBody, mjtJoint
 
 from tbp.monty.frameworks.agents import AgentID
@@ -171,14 +172,26 @@ class Embodiment(Agent):
 
             renderer.enable_segmentation_rendering()
             renderer.update_scene(self.sim.data, camera=f"{self.id}.{sensor_id}")
-            seg = renderer.render()  # (H, W, 2) int32: [..., 0] = geom id (-1 = bg)
+            seg = renderer.render()  # (H, W, 2) int32: [..., 0] = segid, [..., 1] = objtype
             renderer.disable_segmentation_rendering()
-            geom_ids = seg[..., 0].astype(np.int64)
-            # Clip out-of-range indices (e.g. non-geom hits like sites) to background.
-            geom_ids = np.where(
-                (geom_ids >= 0) & (geom_ids < geom_lut.shape[0] - 1), geom_ids, -1
+            # MuJoCo's segmentation buffer can report either the model geom id
+            # or the renderer's per-scene index, depending on geom type. Build
+            # a unified LUT that handles both interpretations.
+            scene = renderer.scene
+            lut_size = max(geom_lut.shape[0], scene.ngeom + 1)
+            seg_lut = np.zeros(lut_size, dtype=np.int32)
+            seg_lut[: geom_lut.shape[0]] = geom_lut  # geom_id indexed
+            for i in range(scene.ngeom):
+                g = scene.geoms[i]
+                if g.objtype == mujoco.mjtObj.mjOBJ_GEOM and 0 <= g.objid < geom_lut.shape[0] - 1:
+                    sem = int(geom_lut[g.objid + 1])
+                    if sem > 0:
+                        seg_lut[i + 1] = sem  # scene-index indexed
+            seg_ids = seg[..., 0].astype(np.int64)
+            seg_ids = np.where(
+                (seg_ids >= 0) & (seg_ids < seg_lut.shape[0] - 1), seg_ids, -1
             )
-            semantic = geom_lut[geom_ids + 1]
+            semantic = seg_lut[seg_ids + 1]
 
             obs[sensor_id] = SensorObservation(
                 depth=depth_data,
