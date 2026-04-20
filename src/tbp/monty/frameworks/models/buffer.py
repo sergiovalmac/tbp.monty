@@ -355,8 +355,11 @@ class FeatureAtLocationBuffer:
         )
         for input_channel in self.features:
             # Here we want to make sure the input-specific observation was on the object
+            # Values are stored as a (n_steps, 1) float array with 1.0/0.0 and
+            # nan for missing. Using `is False` always yields Python False (which
+            # NumPy 2 rejects as a 0-d scalar to np.where).
             channel_off_object_ids = np.where(
-                self.features[input_channel]["on_object"] is False
+                np.asarray(self.features[input_channel]["on_object"]).ravel() == 0
             )[0]
             logger.debug(
                 f"{input_channel} has "

@@ -159,6 +159,7 @@ class Embodiment(Agent):
     @property
     def observations(self) -> AgentObservations:
         obs = AgentObservations()
+        geom_lut = self.sim.geom_id_to_semantic_lut
         for sensor_id in self._sensor_configs:
             renderer = self.sim.renderer
             renderer.update_scene(self.sim.data, camera=f"{self.id}.{sensor_id}")
@@ -168,9 +169,21 @@ class Embodiment(Agent):
             depth_data = renderer.render()
             renderer.disable_depth_rendering()
 
+            renderer.enable_segmentation_rendering()
+            renderer.update_scene(self.sim.data, camera=f"{self.id}.{sensor_id}")
+            seg = renderer.render()  # (H, W, 2) int32: [..., 0] = geom id (-1 = bg)
+            renderer.disable_segmentation_rendering()
+            geom_ids = seg[..., 0].astype(np.int64)
+            # Clip out-of-range indices (e.g. non-geom hits like sites) to background.
+            geom_ids = np.where(
+                (geom_ids >= 0) & (geom_ids < geom_lut.shape[0] - 1), geom_ids, -1
+            )
+            semantic = geom_lut[geom_ids + 1]
+
             obs[sensor_id] = SensorObservation(
                 depth=depth_data,
                 rgba=rgba_data,
+                semantic=semantic,
             )
         return obs
 

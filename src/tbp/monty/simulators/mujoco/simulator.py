@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Sequence
 
+import numpy as np
 from mujoco.viewer import launch_passive
 from mujoco import (
     MjData,
@@ -139,8 +140,24 @@ class MuJoCoSimulator(SimulatedObjectEnvironment):
         # of the agents, especially when we start to add more structure to them.
         self._object_count = 0
 
+        # Maps geom names (stable across recompiles) to the semantic id of the
+        # object they belong to. Geoms not in this map (e.g. robot links) are
+        # treated as background by `geom_id_to_semantic_lut`.
+        self._geom_name_to_semantic: dict[str, int] = {}
+        self._known_geom_names: set[str] = set()
+        # LUT indexed by ``geom_id + 1`` (so segmentation's -1 background maps
+        # to ``lut[0] = 0``). Refreshed after every model recompile.
+        self._geom_id_to_semantic_lut: np.ndarray = np.zeros(1, dtype=np.int32)
+
         self.renderer = None
         self._recompile()
+
+        # Snapshot the names of all geoms present after the initial compile
+        # (i.e. robot/agent geoms) so they are treated as background and never
+        # reassigned to an object's semantic id.
+        self._known_geom_names = {
+            self.model.geom(gid).name for gid in range(self.model.ngeom)
+        }
 
     def _recompile(self) -> None:
         """Recompile the MuJoCo model while retaining any state data."""
@@ -151,9 +168,31 @@ class MuJoCoSimulator(SimulatedObjectEnvironment):
         self.model, self.data = self.spec.recompile(self.model, self.data)
         # The renderer has to be recreated when the model is updated.
         self._create_renderer()
+        # Geom IDs may shift across recompiles, so rebuild the semantic LUT.
+        self._refresh_geom_semantic_lut()
         # Step the simulation so all objects are in their initial positions.
         mj_forward(self.model, self.data)
         self._reopen_viewer()
+
+    def _refresh_geom_semantic_lut(self) -> None:
+        """Rebuild the geom-id -> semantic-id LUT from the current model.
+
+        The LUT is indexed by ``geom_id + 1`` so that the background sentinel
+        (``geom_id == -1``) returned by MuJoCo's segmentation rendering maps
+        to ``lut[0] == 0``.
+        """
+        ngeom = self.model.ngeom
+        lut = np.zeros(ngeom + 1, dtype=np.int32)
+        for gid in range(ngeom):
+            name = self.model.geom(gid).name
+            sem = self._geom_name_to_semantic.get(name, 0)
+            lut[gid + 1] = sem
+        self._geom_id_to_semantic_lut = lut
+
+    @property
+    def geom_id_to_semantic_lut(self) -> np.ndarray:
+        """LUT mapping ``geom_id + 1`` to the semantic id of its parent object."""
+        return self._geom_id_to_semantic_lut
 
     def _reopen_viewer(self) -> None:
         """Reopen the viewer after model recompilation."""
@@ -238,6 +277,19 @@ class MuJoCoSimulator(SimulatedObjectEnvironment):
 
         if not semantic_id:
             semantic_id = SemanticID(self._object_count)
+
+        # Register the geoms added by this object so the segmentation renderer
+        # can label them with the object's semantic id. Skip unnamed geoms,
+        # which are not safe to attribute to a single object.
+        current_names = {
+            self.model.geom(gid).name for gid in range(self.model.ngeom)
+        }
+        new_names = {n for n in current_names - self._known_geom_names if n}
+        for gname in new_names:
+            self._geom_name_to_semantic[gname] = int(semantic_id)
+        self._known_geom_names |= new_names
+        self._refresh_geom_semantic_lut()
+
         return ObjectInfo(
             object_id=ObjectID(self._object_count),
             semantic_id=semantic_id,
