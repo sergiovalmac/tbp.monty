@@ -18,12 +18,12 @@ experiment:
   config:
     monty_config:
       monty_args:
-        num_exploratory_steps: 1000
-    show_sensor_output: true
+        num_exploratory_steps: 100
+    show_sensor_output: false
     do_train: true
-    max_train_steps: 1000
+    max_train_steps: 100
     max_eval_steps: 500
-    max_total_steps: 60
+    max_total_steps: 200
     n_train_epochs: 2
     model_name_or_path: ""
     n_eval_epochs: 10

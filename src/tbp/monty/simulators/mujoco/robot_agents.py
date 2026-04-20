@@ -22,6 +22,8 @@ from tbp.monty.frameworks.actions.actions import (
     MoveTangentially,
     OrientHorizontal,
     OrientVertical,
+    SetAgentPose,
+    SetSensorRotation,
     TurnLeft,
     TurnRight,
 )
@@ -43,6 +45,19 @@ if TYPE_CHECKING:
     from tbp.monty.simulators.mujoco import MuJoCoSimulator
 
 logger = logging.getLogger(__name__)
+
+
+def _quat_wxyz_to_xyzw(rotation_quat) -> tuple[float, float, float, float]:
+    """Normalize a quaternion input (tuple or numpy-quaternion) to scipy's XYZW order."""
+    if hasattr(rotation_quat, "w"):
+        return (
+            float(rotation_quat.x),
+            float(rotation_quat.y),
+            float(rotation_quat.z),
+            float(rotation_quat.w),
+        )
+    w, x, y, z = rotation_quat
+    return (float(x), float(y), float(z), float(w))
 
 
 class RobotAgentBase(Embodiment):
@@ -357,6 +372,40 @@ class RobotAgentBase(Embodiment):
     def actuate_turn_left(self, action: TurnLeft) -> None:
         self._init_robot()
         self._actuate_yaw(action.rotation_degrees)
+        self._solve_and_sync()
+
+    def actuate_set_sensor_rotation(self, action: SetSensorRotation) -> None:
+        """Set the sensor body's rotation relative to the agent body.
+
+        The sensor body in this embodiment has a single hinge (the pitch
+        joint) about its local X axis, so we extract the X component of the
+        requested quaternion and use it as the hinge angle. The agent body
+        pose is left unchanged; the IK solver then drives the robot joints
+        so the EE matches the new combined (body * pitch) pose.
+        """
+        self._init_robot()
+        rot = Rotation.from_quat(_quat_wxyz_to_xyzw(action.rotation_quat))
+        # Extract intrinsic X (pitch). For the typical inputs (identity or a
+        # pure pitch rotation) this is exact; for arbitrary rotations only the
+        # pitch component can be represented by the single hinge.
+        pitch_angle = rot.as_euler("xyz")[0]
+        pitch_addr = self.sim.model.jnt_qposadr[self.pitch_joint.id]
+        self.sim.data.qpos[pitch_addr] = float(pitch_angle)
+        self._solve_and_sync()
+
+    def actuate_set_agent_pose(self, action: SetAgentPose) -> None:
+        """Jump the agent body to an absolute world pose and IK-solve.
+
+        The pitch hinge is zeroed so the requested rotation fully describes the
+        camera orientation. The robot joints are then driven so the EE matches
+        the new virtual-body pose.
+        """
+        self._init_robot()
+        self.position = tuple(action.location)
+        x, y, z, w = _quat_wxyz_to_xyzw(action.rotation_quat)
+        self.rotation = (w, x, y, z)
+        pitch_addr = self.sim.model.jnt_qposadr[self.pitch_joint.id]
+        self.sim.data.qpos[pitch_addr] = 0.0
         self._solve_and_sync()
 
     def actuate_look_up(self, action: LookUp) -> None:
