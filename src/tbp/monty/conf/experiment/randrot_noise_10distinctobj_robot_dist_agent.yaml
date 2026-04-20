@@ -114,7 +114,7 @@ experiment:
         sensor_id: patch
         allow_translation: false
         max_orientation_attempts: 10
-        central_region_radius: 4
+        central_region_radius: 32
       object_names:
       - mug
       - bowl
@@ -143,7 +143,7 @@ experiment:
         sensor_id: patch
         allow_translation: false
         max_orientation_attempts: 10
-        central_region_radius: 4
+        central_region_radius: 32
       object_names:
       - mug
       - bowl
