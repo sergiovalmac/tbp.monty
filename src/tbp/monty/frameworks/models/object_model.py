@@ -40,6 +40,17 @@ from tbp.monty.frameworks.utils.spatial_arithmetics import apply_rf_transform_to
 logger = logging.getLogger(__name__)
 
 
+def _graph_keys(graph):
+    """Return the iterable of attribute names on a ``torch_geometric.data.Data``.
+
+    In torch-geometric < 2.5 ``Data.keys`` is a property returning a list; in
+    >= 2.5 it is a method. This helper hides that difference.
+    """
+    keys = graph.keys
+    return keys() if callable(keys) else keys
+
+
+
 class GraphObjectModel(ObjectModel):
     """Object model class that represents object as graphs."""
 
@@ -149,12 +160,12 @@ class GraphObjectModel(ObjectModel):
 
     @property
     def edge_index(self):
-        if (self._graph is not None) and ("edge_index" in self._graph.keys):
+        if (self._graph is not None) and ("edge_index" in _graph_keys(self._graph)):
             return self._graph.edge_index
 
     @property
     def edge_attr(self):
-        if (self._graph is not None) and ("edge_attr" in self._graph.keys):
+        if (self._graph is not None) and ("edge_attr" in _graph_keys(self._graph)):
             return self._graph.edge_attr
 
     @property
