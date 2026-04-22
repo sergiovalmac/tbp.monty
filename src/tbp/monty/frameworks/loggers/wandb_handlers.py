@@ -77,6 +77,11 @@ class WandbWrapper(MontyHandler):
         return ""
 
     def close(self):
+        for handler in self.wandb_handlers:
+            try:
+                handler.close()
+            except Exception:  # noqa: BLE001
+                pass
         self.wandb_logger.finish()
 
 
@@ -159,10 +164,18 @@ class BasicWandbTableStatsHandler(WandbHandler):
                 stats_table,
                 pd.concat([getattr(self, stats_table), const_df]),
             )
-        # print(getattr(self, stats_table))
-        table = wandb.Table(dataframe=getattr(self, stats_table))
-        wandb.log({stats_table: table}, commit=False)
+        # Tables are logged once in close() instead of every episode.
+        # Re-logging the cumulative table on each step makes the wandb
+        # panel show whichever step the slider lands on, which can be an
+        # empty/partial snapshot.
         self.report_count += 1
+
+    def close(self):
+        for stats_table in ("train_stats_table", "eval_stats_table"):
+            df = getattr(self, stats_table, None)
+            if df is None or len(df) == 0:
+                continue
+            wandb.log({stats_table: wandb.Table(dataframe=df)}, commit=True)
 
 
 class DetailedWandbTableStatsHandler(BasicWandbTableStatsHandler):
@@ -217,7 +230,7 @@ class DetailedWandbTableStatsHandler(BasicWandbTableStatsHandler):
                 }
         actions_df = pd.DataFrame(actions)
         table = wandb.Table(dataframe=actions_df)
-        wandb.log({table_name: table}, step=episode)
+        wandb.log({table_name: table})
 
 
 class BasicWandbChartStatsHandler(WandbHandler):
@@ -239,7 +252,10 @@ class BasicWandbChartStatsHandler(WandbHandler):
         basic_logs = data["BASIC"]
         mode_key = f"{mode}_overall_stats"
         stats = basic_logs.get(mode_key, {})
-        wandb.log(stats[episode], step=episode, commit=False)
+        payload = dict(stats[episode])
+        payload["episode"] = episode
+        payload["mode"] = str(mode)
+        wandb.log(payload, commit=False)
 
     def get_safe_columns_per_lm(self, stats):
         """Format each episode by looping over learning modules and formatting each one.
@@ -302,7 +318,6 @@ class DetailedWandbHandler(WandbHandler):
                         frames, format="gif"
                     )
                 },
-                step=episode,
                 commit=False,
             )
 
