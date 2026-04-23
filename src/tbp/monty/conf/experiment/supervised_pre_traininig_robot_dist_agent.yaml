@@ -6,7 +6,7 @@
 # The configuration for the pretraining experiment.
 defaults:
   - /monty: graph_exp500_e3_t3_tot2500
-  - /monty/motor_system_config: naive_scan_5
+  - /monty/motor_system_config: informed_5_goal1
   - /monty/learning_module: displacement_delta_d0001
   - /monty/sensor_module: camera_dist
   - /monty/connectivity: 1lm_1sm
@@ -65,7 +65,7 @@ experiment:
     seed: 42
     supervised_lm_ids: all
     logging:
-      run_name: supervised_pre_training_robot_dist_agent
+      run_name: supervised_pre_training_robot_dist_agent_3
     environment:
       env_init_args:
         show_viewer: false
@@ -151,14 +151,14 @@ experiment:
       - _target_: tbp.monty.simulators.mujoco.positioning_procedures.MuJoCoGetGoodViewFactory
         agent_id: agent_id_0
         sensor_id: view_finder
-        allow_translation: false
+        allow_translation: true
         max_orientation_attempts: 5
       - _target_: tbp.monty.simulators.mujoco.positioning_procedures.MuJoCoGetGoodViewFactory
         agent_id: agent_id_0
         sensor_id: patch
-        allow_translation: false
+        allow_translation: true
         max_orientation_attempts: 10
-        central_region_radius: 32
+        central_region_radius: 8
       object_names:
       - mug
       # - bowl
@@ -174,5 +174,5 @@ experiment:
         _target_: tbp.monty.frameworks.environments.object_init_samplers.Predefined
         positions: [[-0.492, -0.134, 0.388]]
         rotations: ${constants.rotations_all}
-        # scales: [[1.0, 1.0, 1.0]]
+        scales: [[1.0, 1.0, 1.0]]
     # learning module config: 1 graph learning module.
