@@ -1,0 +1,154 @@
+# @package _global_
+# Inference configuration for evaluating the model trained by
+# supervised_pre_traininig_robot_dist_agent.yaml on the MuJoCo UR5e robot
+# distant agent. Evaluates 2 objects (mug, banana) in 3 rotations each.
+
+defaults:
+  - /monty: graph_exp500_e3_t3_tot2500
+  - /monty/motor_system_config: informed_5_goal1
+  # - /monty/learning_module: displacement_delta_d0001
+  - /monty/sensor_module: camera_dist
+  - /monty/connectivity: 1lm_1sm
+  - /env_interface/positioning_procedures_train: getgoodview_viewfinder_patch
+  - /env_interface/transform: missing_depthto3d_sensor2_semantic0
+  - /logging: basic_warning_wandb_monty_runs
+
+experiment:
+  _target_: tbp.monty.frameworks.experiments.object_recognition_experiments.MontyObjectRecognitionExperiment
+  config:
+    # Path to the pre-trained model produced by the matching pretraining run.
+    model_name_or_path: ${path.expanduser:"~/tbp/results/monty/projects/monty_runs/supervised_pre_training_robot_dist_agent_3/pretrained"}
+
+    seed: 42
+    do_train: false
+    do_eval: true
+    n_train_epochs: 1            # unused (do_train=false) but required key
+    n_eval_epochs: 3
+    max_train_steps: 1000        # unused but required key
+    max_eval_steps: 500
+    max_total_steps: 5000
+    min_lms_match: 1
+    supervised_lm_ids: []
+    show_sensor_output: true
+
+    logging:
+      run_name: supervised_pre_training_robot_dist_agent_3_eval
+
+    monty_config:
+      monty_args:
+        min_eval_steps: 20
+      sensor_module_configs:
+        sensor_module_0:
+          sensor_module_class: ${monty.class:tbp.monty.frameworks.models.sensor_modules.CameraSM}
+          sensor_module_args:
+            sensor_module_id: patch
+            is_surface_sm: true
+            features:
+              - pose_vectors
+              - pose_fully_defined
+              - on_object
+              - object_coverage
+              - min_depth
+              - mean_depth
+              - hsv
+              - principal_curvatures
+              - principal_curvatures_log
+            save_raw_obs: false
+            delta_thresholds:
+              on_object: 0
+              n_steps: 20
+              hsv: [0.1, 0.1, 0.1]
+              pose_vectors: ${np.list_eval:[np.pi / 4, np.pi * 2, np.pi * 2]}
+              principal_curvatures_log: [2, 2]
+              distance: 0.01
+            noise_params:
+              features:
+                pose_vectors: 2
+                hsv: ${np.array:[0.1, 0.2, 0.2]}
+                principal_curvatures_log: 0.1
+                pose_fully_defined: 0.01
+              location: 0.002
+        sensor_module_1:
+          sensor_module_class: ${monty.class:tbp.monty.frameworks.models.sensor_modules.Probe}
+          sensor_module_args:
+            sensor_module_id: view_finder
+            save_raw_obs: false
+      learning_module_configs:
+        learning_module_0:
+          learning_module_class: ${monty.class:tbp.monty.frameworks.models.evidence_matching.learning_module.EvidenceGraphLM}
+          learning_module_args:
+            max_match_distance: 0.01
+            tolerances:
+              patch:
+                hsv: ${np.array:[0.1, 0.2, 0.2]}
+                principal_curvatures_log: [1, 1]
+            feature_weights:
+              patch:
+                hsv: ${np.array:[1, 0.5, 0.5]}
+            x_percent_threshold: 20
+            evidence_threshold_config: 80%
+            gsg:
+              _target_: tbp.monty.frameworks.models.goal_generation.EvidenceGoalGenerator
+              goal_tolerances:
+                location: 0.015
+              min_post_goal_success_steps: 5
+            hypotheses_updater_args:
+              max_nneighbors: 10
+
+    environment:
+      env_init_func: ${monty.class:tbp.monty.simulators.mujoco.MuJoCoEnvironment}
+      env_init_args:
+        show_viewer: false
+        seed: 42
+        data_path: /home/sergiov/tbp/data/habitat/objects/ycb
+        agents:
+          _target_: tbp.monty.simulators.mujoco.RobotDistantAgent
+          _partial_: true
+          agent_id: agent_id_0
+          position: [0.0, 0.0, 0.0]
+          rotation: [1.0, 0.0, 0.0, 0.0]
+          robot_name: "robot:ur5e"
+          ee_site_name: attachment_site
+          home_qpos: [0.0, -1.332171, 0.600014, -0.838639, -1.570796, 1.570796]
+          ik_method: "damped_ls"
+          ik_args:
+            max_iter: 500
+            tol: 0.0001
+            damping: 0.05
+          sensor_configs:
+            patch:
+              position: [0.0, 0.0, 0.0]
+              rotation: [1.0, 0.0, 0.0, 0.0]
+              resolution: [64, 64]
+              zoom: 10.0
+            view_finder:
+              position: [0.0, 0.0, 0.0]
+              rotation: [1.0, 0.0, 0.0, 0.0]
+              resolution: [64, 64]
+              zoom: 1.0
+
+    eval_env_interface_class: ${monty.class:tbp.monty.frameworks.environments.embodied_data.EnvironmentInterfacePerObject}
+    eval_env_interface_args:
+      positioning_procedures:
+      - _target_: tbp.monty.simulators.mujoco.positioning_procedures.MuJoCoGetGoodViewFactory
+        agent_id: agent_id_0
+        sensor_id: view_finder
+        allow_translation: true
+        max_orientation_attempts: 5
+      - _target_: tbp.monty.simulators.mujoco.positioning_procedures.MuJoCoGetGoodViewFactory
+        agent_id: agent_id_0
+        sensor_id: patch
+        allow_translation: true
+        max_orientation_attempts: 10
+        central_region_radius: 8
+      object_names:
+        - mug
+        - banana
+      object_init_sampler:
+        _target_: tbp.monty.frameworks.environments.object_init_samplers.Predefined
+        positions: [[-0.492, -0.134, 0.388]]
+        rotations:
+          - ${np.array:[0.0, 15.0, 30.0]}
+          - ${np.array:[7.0, 77.0, 2.0]}
+          - ${np.array:[81.0, 33.0, 90.0]}
+        scales: [[1.0, 1.0, 1.0]]
