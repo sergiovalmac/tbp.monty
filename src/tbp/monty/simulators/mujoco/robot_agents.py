@@ -8,6 +8,7 @@
 # https://opensource.org/licenses/MIT.
 from __future__ import annotations
 
+import importlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,8 @@ if TYPE_CHECKING:
     from tbp.monty.simulators.mujoco import MuJoCoSimulator
 
 logger = logging.getLogger(__name__)
+
+ROBOT_AGENT_PREFIX = "robot:"
 
 
 def _quat_wxyz_to_xyzw(rotation_quat) -> tuple[float, float, float, float]:
@@ -141,10 +144,7 @@ class RobotAgentBase(Embodiment):
             simulator: The simulator whose spec will be populated.
             robot_name: Robot identifier, e.g. ``"robot:ur5e"``.
         """
-        import importlib
-
-        prefix = "robot:"
-        bare_name = robot_name[len(prefix):] if robot_name.startswith(prefix) else robot_name
+        bare_name = robot_name[len(ROBOT_AGENT_PREFIX):] if robot_name.startswith(ROBOT_AGENT_PREFIX) else robot_name
         module_name = f"robot_descriptions.{bare_name}_mj_description"
         try:
             mod = importlib.import_module(module_name)
