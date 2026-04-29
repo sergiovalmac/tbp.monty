@@ -5,7 +5,7 @@
 
 defaults:
   - /monty: graph_exp500_e3_t3_tot2500
-  - /monty/motor_system_config: informed_5_goal1
+  - /monty/motor_system_config: distant_5
   # - /monty/learning_module: displacement_delta_d0001
   - /monty/sensor_module: camera_dist
   - /monty/connectivity: 1lm_1sm
@@ -98,7 +98,7 @@ experiment:
     environment:
       env_init_func: ${monty.class:tbp.monty.simulators.mujoco.MuJoCoEnvironment}
       env_init_args:
-        show_viewer: false
+        show_viewer: true
         seed: 42
         data_path: /home/sergiov/tbp/data/habitat/objects/ycb
         agents:

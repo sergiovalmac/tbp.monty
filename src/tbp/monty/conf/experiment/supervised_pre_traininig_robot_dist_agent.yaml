@@ -6,7 +6,7 @@
 # The configuration for the pretraining experiment.
 defaults:
   - /monty: graph_exp500_e3_t3_tot2500
-  - /monty/motor_system_config: informed_5_goal1
+  - /monty/motor_system_config: distant_5
   - /monty/learning_module: displacement_delta_d0001
   - /monty/sensor_module: camera_dist
   - /monty/connectivity: 1lm_1sm
